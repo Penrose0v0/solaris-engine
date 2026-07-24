@@ -117,6 +117,7 @@ def generate_compose_config(
     # GPU settings
     gpu_device_id: Optional[int] = None,
     gpu_mode: str = "egl",
+    disable_nvenc: bool = False,
     # Eval options
     eval_time_set_day: int = 0,
     # Flatland options
@@ -399,6 +400,7 @@ def generate_compose_config(
                     "VNC_PASSWORD": "research",
                     "ENABLE_RECORDING": "1",
                     "RECORDING_PATH": "/output/camera_alpha.mkv",
+                    "DISABLE_NVENC": "1" if disable_nvenc else "0",
                     "RENDER_DISTANCE": render_distance,
                     "SIMULATION_DISTANCE": simulation_distance,
                     "GRAPHICS_MODE": graphics_mode,
@@ -472,6 +474,7 @@ def generate_compose_config(
                     "VNC_PASSWORD": "research",
                     "ENABLE_RECORDING": "1",
                     "RECORDING_PATH": "/output/camera_bravo.mkv",
+                    "DISABLE_NVENC": "1" if disable_nvenc else "0",
                     "RENDER_DISTANCE": render_distance,
                     "SIMULATION_DISTANCE": simulation_distance,
                     "GRAPHICS_MODE": graphics_mode,
@@ -717,6 +720,16 @@ def main():
         choices=["egl", "x11", "auto"],
         help="GPU rendering mode: egl (headless), x11 (requires host X), auto (default: egl)",
     )
+    parser.add_argument(
+        "--disable_nvenc",
+        type=int,
+        default=0,
+        choices=[0, 1],
+        help="Force CPU (libx264) video encoding in camera containers. Normally "
+        "unnecessary: the camera entrypoint probes NVENC with a test encode and "
+        "falls back to CPU automatically on GPUs without NVENC silicon (e.g. "
+        "A100/H100). Use this to skip the probe or force CPU encoding (default: 0)",
+    )
 
     args = parser.parse_args()
     # Ensure required dirs are absolute
@@ -839,6 +852,7 @@ def main():
             # GPU settings
             gpu_device_id=gpu_device_id,
             gpu_mode=args.gpu_mode,
+            disable_nvenc=bool(args.disable_nvenc),
             # Eval options
             eval_time_set_day=args.eval_time_set_day,
             # Flatland options

@@ -134,6 +134,27 @@ GAME_PID=$!
 PIDS="$PIDS $GAME_PID"
 
 if [ "$ENABLE_RECORDING" = "1" ]; then
+  # Pick the video encoder. ffmpeg listing h264_nvenc only proves the encoder is
+  # compiled in — datacenter GPUs without NVENC silicon (A100, H100, A30) still
+  # fail at runtime. So probe with a one-frame test encode and fall back to CPU
+  # automatically. DISABLE_NVENC=1 skips the probe and forces CPU encoding.
+  VIDEO_ENCODER="libx264"
+  if [ "${DISABLE_NVENC:-0}" = "1" ]; then
+    echo "[client] NVENC disabled via DISABLE_NVENC=1; using CPU (libx264) encoding"
+  elif ! ffmpeg -hide_banner -encoders 2>/dev/null | grep -q h264_nvenc; then
+    echo "[client] ffmpeg has no h264_nvenc support; using CPU (libx264) encoding"
+  elif ffmpeg -hide_banner -loglevel error -f lavfi -i color=black:s=192x192:r=10 \
+      -frames:v 1 -c:v h264_nvenc -f null - >/dev/null 2>&1; then
+    VIDEO_ENCODER="h264_nvenc"
+  else
+    echo "[client] ============================================================"
+    echo "[client] NVENC AUTO-DISABLED: h264_nvenc is compiled into ffmpeg but a"
+    echo "[client] test encode failed on this GPU (datacenter GPUs such as the"
+    echo "[client] A100/H100 have no NVENC hardware)."
+    echo "[client] Falling back to CPU (libx264) video encoding."
+    echo "[client] ============================================================"
+  fi
+
   # Small delay so the Minecraft window stabilizes before capturing.
   sleep "${RECORDING_DELAY:-5}"
   RECORDING_META_PATH=${RECORDING_META_PATH:-${RECORDING_PATH%.*}_meta.json}
@@ -154,6 +175,7 @@ if [ "$ENABLE_RECORDING" = "1" ]; then
   "display": "${DISPLAY}",
   "camera_name": "${CAMERA_NAME:-}",
   "gpu_mode": "${GPU_MODE}",
+  "video_encoder": "${VIDEO_ENCODER}",
   "wallclock_timestamps": true,
   "note": "MKV PTS values are absolute Unix epoch timestamps. Use ffprobe to extract per-frame times."
 }
@@ -173,7 +195,7 @@ EOF
   #                                            in the container (simplifies ffprobe
   #                                            extraction at postprocessing time).
 
-  if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q h264_nvenc; then
+  if [ "$VIDEO_ENCODER" = "h264_nvenc" ]; then
     echo "[client] Using NVENC hardware encoding (MKV) with wallclock timestamps"
     ffmpeg -hide_banner -loglevel info -y \
       -use_wallclock_as_timestamps 1 \
