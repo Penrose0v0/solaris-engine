@@ -36,13 +36,31 @@ def camera_paths(
     bravo_base: str,
     data_alpha_base: str,
     data_bravo_base: str,
+    overhead_alpha_base: Optional[str] = None,
+    overhead_bravo_base: Optional[str] = None,
+    data_overhead_alpha_base: Optional[str] = None,
+    data_overhead_bravo_base: Optional[str] = None,
 ) -> dict:
-    return {
+    paths = {
         "alpha_output_host": os.path.join(alpha_base, str(instance_id)),
         "bravo_output_host": os.path.join(bravo_base, str(instance_id)),
         "alpha_data_host": os.path.join(data_alpha_base, str(instance_id)),
         "bravo_data_host": os.path.join(data_bravo_base, str(instance_id)),
     }
+    if overhead_alpha_base is not None:
+        paths["overhead_alpha_output_host"] = os.path.join(
+            overhead_alpha_base, str(instance_id)
+        )
+        paths["overhead_bravo_output_host"] = os.path.join(
+            overhead_bravo_base, str(instance_id)
+        )
+        paths["overhead_alpha_data_host"] = os.path.join(
+            data_overhead_alpha_base, str(instance_id)
+        )
+        paths["overhead_bravo_data_host"] = os.path.join(
+            data_overhead_bravo_base, str(instance_id)
+        )
+    return paths
 
 
 def camera_ports(
@@ -54,8 +72,12 @@ def camera_ports(
     display_base: int,
     vnc_step: int,
     display_step: int,
+    overhead_alpha_vnc_base: Optional[int] = None,
+    overhead_alpha_novnc_base: Optional[int] = None,
+    overhead_bravo_vnc_base: Optional[int] = None,
+    overhead_bravo_novnc_base: Optional[int] = None,
 ) -> dict:
-    return {
+    ports = {
         "alpha_vnc": alpha_vnc_base + vnc_step * instance_id,
         "alpha_novnc": alpha_novnc_base + vnc_step * instance_id,
         "bravo_vnc": bravo_vnc_base + vnc_step * instance_id,
@@ -63,6 +85,22 @@ def camera_ports(
         "alpha_display": f":{display_base + display_step * instance_id}",
         "bravo_display": f":{display_base + display_step * instance_id + 1}",
     }
+    if overhead_alpha_vnc_base is not None:
+        ports["overhead_alpha_vnc"] = overhead_alpha_vnc_base + vnc_step * instance_id
+        ports["overhead_alpha_novnc"] = (
+            overhead_alpha_novnc_base + vnc_step * instance_id
+        )
+        ports["overhead_bravo_vnc"] = overhead_bravo_vnc_base + vnc_step * instance_id
+        ports["overhead_bravo_novnc"] = (
+            overhead_bravo_novnc_base + vnc_step * instance_id
+        )
+        ports["overhead_alpha_display"] = (
+            f":{display_base + display_step * instance_id + 2}"
+        )
+        ports["overhead_bravo_display"] = (
+            f":{display_base + display_step * instance_id + 3}"
+        )
+    return ports
 
 
 def generate_terrain_settings(biome, surface_block):
@@ -114,6 +152,8 @@ def generate_compose_config(
     cpuset: Optional[str] = None,
     cpuset_camera_alpha: Optional[str] = None,
     cpuset_camera_bravo: Optional[str] = None,
+    cpuset_camera_overhead_alpha: Optional[str] = None,
+    cpuset_camera_overhead_bravo: Optional[str] = None,
     # GPU settings
     gpu_device_id: Optional[int] = None,
     gpu_mode: str = "egl",
@@ -121,12 +161,29 @@ def generate_compose_config(
     eval_time_set_day: int = 0,
     # Flatland options
     flatland_world_disable_structures: bool = False,
+    # Recording rate: camera capture fps; the action-recording interval is
+    # derived from it so actions and frames stay 1:1.
+    fps: int = 20,
+    # Overhead (top-down) cameras
+    enable_overhead_cameras: bool = False,
+    camera_output_overhead_alpha_base: Optional[str] = None,
+    camera_output_overhead_bravo_base: Optional[str] = None,
+    camera_data_overhead_alpha_base: Optional[str] = None,
+    camera_data_overhead_bravo_base: Optional[str] = None,
+    camera_overhead_alpha_vnc_base: Optional[int] = None,
+    camera_overhead_alpha_novnc_base: Optional[int] = None,
+    camera_overhead_bravo_vnc_base: Optional[int] = None,
+    camera_overhead_bravo_novnc_base: Optional[int] = None,
 ):
     """Generate a Docker Compose configuration for a single instance."""
 
     # Calculate ports for this instance
     mc_port = base_port + instance_id
     rcon_port = base_rcon_port + instance_id
+
+    # Action-recording interval (ms) matching the camera fps, so each action
+    # tick has exactly one video frame.
+    viewer_recording_interval = int(round(1000 / fps))
 
     # Directories - each instance gets its own data subdirectory
     data_dir = f"{data_dir_base}/{instance_id}"
@@ -137,6 +194,10 @@ def generate_compose_config(
         camera_output_bravo_base,
         camera_data_alpha_base,
         camera_data_bravo_base,
+        overhead_alpha_base=camera_output_overhead_alpha_base if enable_overhead_cameras else None,
+        overhead_bravo_base=camera_output_overhead_bravo_base if enable_overhead_cameras else None,
+        data_overhead_alpha_base=camera_data_overhead_alpha_base if enable_overhead_cameras else None,
+        data_overhead_bravo_base=camera_data_overhead_bravo_base if enable_overhead_cameras else None,
     )
     cam_ports = camera_ports(
         instance_id,
@@ -147,6 +208,10 @@ def generate_compose_config(
         display_base,
         vnc_step,
         display_step,
+        overhead_alpha_vnc_base=camera_overhead_alpha_vnc_base if enable_overhead_cameras else None,
+        overhead_alpha_novnc_base=camera_overhead_alpha_novnc_base if enable_overhead_cameras else None,
+        overhead_bravo_vnc_base=camera_overhead_bravo_vnc_base if enable_overhead_cameras else None,
+        overhead_bravo_novnc_base=camera_overhead_bravo_novnc_base if enable_overhead_cameras else None,
     )
 
     project_root = str(Path(__file__).resolve().parent)
@@ -274,7 +339,7 @@ def generate_compose_config(
                     "CAMERA_READY_CHECK_INTERVAL": 2000,
                     "MC_VERSION": "1.21",
                     "VIEWER_RENDERING_DISABLED": viewer_rendering_disabled,
-                    "VIEWER_RECORDING_INTERVAL": 50,
+                    "VIEWER_RECORDING_INTERVAL": viewer_recording_interval,
                     "WALK_TIMEOUT": 5,
                     "TELEPORT": 1,
                     "TELEPORT_RADIUS": 50000,
@@ -328,7 +393,7 @@ def generate_compose_config(
                     "CAMERA_READY_CHECK_INTERVAL": 2000,
                     "MC_VERSION": "1.21",
                     "VIEWER_RENDERING_DISABLED": viewer_rendering_disabled,
-                    "VIEWER_RECORDING_INTERVAL": 50,
+                    "VIEWER_RECORDING_INTERVAL": viewer_recording_interval,
                     "WALK_TIMEOUT": 5,
                     "TELEPORT": 1,
                     "TELEPORT_RADIUS": 250,
@@ -395,7 +460,7 @@ def generate_compose_config(
                     "NOVNC_PORT": str(cam_ports["alpha_novnc"]),
                     "WIDTH": "1280",
                     "HEIGHT": "720",
-                    "FPS": "20",
+                    "FPS": str(fps),
                     "VNC_PASSWORD": "research",
                     "ENABLE_RECORDING": "1",
                     "RECORDING_PATH": "/output/camera_alpha.mkv",
@@ -425,6 +490,18 @@ def generate_compose_config(
                     f"camera_alpha_instance_{instance_id}": {
                         "condition": "service_started"
                     },
+                    **(
+                        {
+                            f"overhead_camera_alpha_instance_{instance_id}": {
+                                "condition": "service_started"
+                            },
+                            f"overhead_camera_bravo_instance_{instance_id}": {
+                                "condition": "service_started"
+                            },
+                        }
+                        if enable_overhead_cameras
+                        else {}
+                    ),
                 },
                 "working_dir": "/app",
                 "environment": {
@@ -432,7 +509,12 @@ def generate_compose_config(
                     "RCON_PORT": rcon_port,
                     "RCON_PASSWORD": "research",
                     "EPISODE_START_RETRIES": "300",
-                    "EPISODE_REQUIRED_PLAYERS": "Alpha,CameraAlpha,Bravo,CameraBravo,SpectatorAlpha,SpectatorBravo",
+                    "EPISODE_REQUIRED_PLAYERS": (
+                        "Alpha,CameraAlpha,Bravo,CameraBravo,SpectatorAlpha,SpectatorBravo,"
+                        "OverheadAlpha,OverheadBravo"
+                        if enable_overhead_cameras
+                        else "Alpha,CameraAlpha,Bravo,CameraBravo,SpectatorAlpha,SpectatorBravo"
+                    ),
                     "EPISODE_START_COMMAND": "episode start Alpha CameraAlpha technoblade.png Bravo CameraBravo test.png",
                 },
                 "volumes": [
@@ -468,7 +550,7 @@ def generate_compose_config(
                     "NOVNC_PORT": str(cam_ports["bravo_novnc"]),
                     "WIDTH": "1280",
                     "HEIGHT": "720",
-                    "FPS": "20",
+                    "FPS": str(fps),
                     "VNC_PASSWORD": "research",
                     "ENABLE_RECORDING": "1",
                     "RECORDING_PATH": "/output/camera_bravo.mkv",
@@ -488,6 +570,106 @@ def generate_compose_config(
                     f"{cam_paths['bravo_output_host']}:/output",
                 ],
             },
+            **(
+                {
+                    # Overhead camera alpha: top-down recording client, directly above Alpha
+                    f"overhead_camera_alpha_instance_{instance_id}": {
+                        "image": "solaris-engine-camera:latest",
+                        "build": {
+                            "context": os.path.join(project_root, "camera"),
+                            "dockerfile": "Dockerfile",
+                        },
+                        "restart": "unless-stopped",
+                        "network_mode": "host",
+                        **(
+                            {"cpuset": cpuset_camera_overhead_alpha}
+                            if cpuset_camera_overhead_alpha
+                            else {}
+                        ),
+                        "depends_on": {
+                            f"mc_instance_{instance_id}": {"condition": "service_healthy"}
+                        },
+                        "environment": {
+                            "MC_VERSION": "1.21",
+                            "MC_HOST": "127.0.0.1",
+                            "MC_PORT": mc_port,
+                            "CAMERA_NAME": "OverheadAlpha",
+                            "DISPLAY": cam_ports["overhead_alpha_display"],
+                            "VNC_PORT": str(cam_ports["overhead_alpha_vnc"]),
+                            "NOVNC_PORT": str(cam_ports["overhead_alpha_novnc"]),
+                            "WIDTH": "1280",
+                            "HEIGHT": "720",
+                            "FPS": str(fps),
+                            "VNC_PASSWORD": "research",
+                            "ENABLE_RECORDING": "1",
+                            "RECORDING_PATH": "/output/overhead_camera_alpha.mkv",
+                            "RENDER_DISTANCE": render_distance,
+                            "SIMULATION_DISTANCE": simulation_distance,
+                            "GRAPHICS_MODE": graphics_mode,
+                            **(
+                                {
+                                    "NVIDIA_DRIVER_CAPABILITIES": "all",
+                                    "NVIDIA_VISIBLE_DEVICES": gpu_device_id,
+                                }
+                            ),
+                        },
+                        "runtime": "nvidia",
+                        "volumes": [
+                            f"{cam_paths['overhead_alpha_data_host']}:/root",
+                            f"{cam_paths['overhead_alpha_output_host']}:/output",
+                        ],
+                    },
+                    # Overhead camera bravo: top-down recording client, directly above Bravo
+                    f"overhead_camera_bravo_instance_{instance_id}": {
+                        "image": "solaris-engine-camera:latest",
+                        "build": {
+                            "context": os.path.join(project_root, "camera"),
+                            "dockerfile": "Dockerfile",
+                        },
+                        "restart": "unless-stopped",
+                        "network_mode": "host",
+                        **(
+                            {"cpuset": cpuset_camera_overhead_bravo}
+                            if cpuset_camera_overhead_bravo
+                            else {}
+                        ),
+                        "depends_on": {
+                            f"mc_instance_{instance_id}": {"condition": "service_healthy"}
+                        },
+                        "environment": {
+                            "MC_VERSION": "1.21",
+                            "MC_HOST": "127.0.0.1",
+                            "MC_PORT": mc_port,
+                            "CAMERA_NAME": "OverheadBravo",
+                            "DISPLAY": cam_ports["overhead_bravo_display"],
+                            "VNC_PORT": str(cam_ports["overhead_bravo_vnc"]),
+                            "NOVNC_PORT": str(cam_ports["overhead_bravo_novnc"]),
+                            "WIDTH": "1280",
+                            "HEIGHT": "720",
+                            "FPS": str(fps),
+                            "VNC_PASSWORD": "research",
+                            "ENABLE_RECORDING": "1",
+                            "RECORDING_PATH": "/output/overhead_camera_bravo.mkv",
+                            "RENDER_DISTANCE": render_distance,
+                            "SIMULATION_DISTANCE": simulation_distance,
+                            "GRAPHICS_MODE": graphics_mode,
+                            **(
+                                {
+                                    "NVIDIA_DRIVER_CAPABILITIES": "all",
+                                    "NVIDIA_VISIBLE_DEVICES": gpu_device_id,
+                                }
+                            ),
+                        },
+                        "runtime": "nvidia",
+                        "volumes": [
+                            f"{cam_paths['overhead_bravo_data_host']}:/root",
+                            f"{cam_paths['overhead_bravo_output_host']}:/output",
+                        ],
+                    },
+                }
+                if enable_overhead_cameras
+                else {}
+            ),
             # Passive spectator alpha
             f"spectator_alpha_instance_{instance_id}": {
                 "image": "solaris-engine-base:latest",
@@ -631,9 +813,69 @@ def main():
     parser.add_argument("--camera_alpha_novnc_base", type=int, default=6901)
     parser.add_argument("--camera_bravo_vnc_base", type=int, default=5902)
     parser.add_argument("--camera_bravo_novnc_base", type=int, default=6902)
-    parser.add_argument("--display_base", type=int, default=99)
-    parser.add_argument("--vnc_step", type=int, default=2)
-    parser.add_argument("--display_step", type=int, default=2)
+    parser.add_argument(
+        "--display_base",
+        type=int,
+        default=199,
+        help="Base X display number (default: 199). Avoid 99: on this host "
+        "it collides with a long-running root Xvfb (:99, 1400x900), which "
+        "causes camera_alpha's x11grab to fail its MIT-SHM capture and "
+        "record corrupted/striped frames.",
+    )
+    parser.add_argument(
+        "--vnc_step",
+        type=int,
+        default=None,
+        help="VNC/noVNC port numbers consumed per instance (default: 2, or 4 "
+        "if --enable_overhead_cameras is set, since each instance then runs "
+        "4 camera containers instead of 2)",
+    )
+    parser.add_argument(
+        "--display_step",
+        type=int,
+        default=None,
+        help="Display numbers consumed per instance (default: 2, or 4 if "
+        "--enable_overhead_cameras is set)",
+    )
+    # Overhead (top-down) cameras: optional pair of extra recording clients
+    # positioned directly above each player, looking straight down.
+    parser.add_argument(
+        "--enable_overhead_cameras",
+        type=int,
+        default=0,
+        choices=[0, 1],
+        help="Add top-down overhead camera containers above Alpha/Bravo "
+        "(default: 0). Doubles the NVENC streams per instance, halving "
+        "max parallel instances.",
+    )
+    parser.add_argument(
+        "--camera_output_overhead_alpha_base",
+        default=None,
+        help="Absolute base dir for per-instance Overhead Camera Alpha outputs "
+        "(required if --enable_overhead_cameras is set)",
+    )
+    parser.add_argument(
+        "--camera_output_overhead_bravo_base",
+        default=None,
+        help="Absolute base dir for per-instance Overhead Camera Bravo outputs "
+        "(required if --enable_overhead_cameras is set)",
+    )
+    parser.add_argument(
+        "--camera_data_overhead_alpha_base",
+        default=None,
+        help="Absolute base dir for per-instance Overhead Camera Alpha data "
+        "(default: <project>/camera/data_overhead_alpha)",
+    )
+    parser.add_argument(
+        "--camera_data_overhead_bravo_base",
+        default=None,
+        help="Absolute base dir for per-instance Overhead Camera Bravo data "
+        "(default: <project>/camera/data_overhead_bravo)",
+    )
+    parser.add_argument("--camera_overhead_alpha_vnc_base", type=int, default=5903)
+    parser.add_argument("--camera_overhead_alpha_novnc_base", type=int, default=6903)
+    parser.add_argument("--camera_overhead_bravo_vnc_base", type=int, default=5904)
+    parser.add_argument("--camera_overhead_bravo_novnc_base", type=int, default=6904)
     parser.add_argument(
         "--num_episodes",
         type=int,
@@ -717,6 +959,24 @@ def main():
         choices=["egl", "x11", "auto"],
         help="GPU rendering mode: egl (headless), x11 (requires host X), auto (default: egl)",
     )
+    parser.add_argument(
+        "--fps",
+        type=int,
+        default=20,
+        help="Camera capture fps; the controller's action-recording interval "
+        "is derived from it (1000/fps ms) so actions and frames stay 1:1 "
+        "(default: 20)",
+    )
+    parser.add_argument(
+        "--gpu_count",
+        type=int,
+        default=1,
+        help="Number of GPUs to spread instances across, round-robin "
+        "(default: 1). Each GPU supports 8 NVENC streams, i.e. 2 instances "
+        "with overhead cameras or 4 without. Historical note: an NVIDIA "
+        "driver bug used to restrict this setup to GPU 0 only; verified "
+        "fixed on this host's current driver (2026-07).",
+    )
 
     args = parser.parse_args()
     # Ensure required dirs are absolute
@@ -740,6 +1000,53 @@ def main():
     else:
         args.camera_data_bravo_base = absdir(args.camera_data_bravo_base)
 
+    # Overhead cameras: resolve defaults only when enabled
+    if args.enable_overhead_cameras:
+        if not args.camera_output_overhead_alpha_base:
+            raise ValueError(
+                "--camera_output_overhead_alpha_base is required when "
+                "--enable_overhead_cameras is set"
+            )
+        if not args.camera_output_overhead_bravo_base:
+            raise ValueError(
+                "--camera_output_overhead_bravo_base is required when "
+                "--enable_overhead_cameras is set"
+            )
+        args.camera_output_overhead_alpha_base = absdir(
+            args.camera_output_overhead_alpha_base
+        )
+        args.camera_output_overhead_bravo_base = absdir(
+            args.camera_output_overhead_bravo_base
+        )
+        if args.camera_data_overhead_alpha_base is None:
+            args.camera_data_overhead_alpha_base = absdir(
+                os.path.join(project_root, "camera", "data_overhead_alpha")
+            )
+        else:
+            args.camera_data_overhead_alpha_base = absdir(
+                args.camera_data_overhead_alpha_base
+            )
+        if args.camera_data_overhead_bravo_base is None:
+            args.camera_data_overhead_bravo_base = absdir(
+                os.path.join(project_root, "camera", "data_overhead_bravo")
+            )
+        else:
+            args.camera_data_overhead_bravo_base = absdir(
+                args.camera_data_overhead_bravo_base
+            )
+
+    # display_step defaults to 2 (Alpha+Bravo) or 4 if overhead cameras add
+    # two more displays per instance; an explicit --display_step always wins.
+    if args.display_step is None:
+        args.display_step = 4 if args.enable_overhead_cameras else 2
+
+    # vnc_step defaults to 2 (Alpha+Bravo) or 4 if overhead cameras add two
+    # more camera containers per instance; an explicit --vnc_step always wins.
+    # Without this, instance N+1's camera_alpha/bravo ports collide with
+    # instance N's overhead_alpha/bravo ports (both land on base+2/base+3).
+    if args.vnc_step is None:
+        args.vnc_step = 4 if args.enable_overhead_cameras else 2
+
     # Create compose directory
     compose_dir = Path(args.compose_dir)
     compose_dir.mkdir(parents=True, exist_ok=True)
@@ -756,22 +1063,26 @@ def main():
         world_plan = ["normal"] * total_instances
 
     # GPU configuration validation
-    gpu_count = 1
+    gpu_count = args.gpu_count
 
     # GPU configuration summary
-    print(f"GPU rendering enabled: {gpu_count} GPUs available, mode={args.gpu_mode}")
+    print(f"GPU rendering enabled: {gpu_count} GPUs, mode={args.gpu_mode}")
     print(f"  Instances will be distributed round-robin across GPUs")
-    print(f"  ! Due to a known NVIDIA driver bug, only GPU 0 can be used for now. See Docs->Known Issue(s) for details")
-    print(f"  ! https://solaris-wm.github.io/solaris-engine/getting_started.html#known-issue-s")
     for i in range(total_instances):
         gpu_id = i % gpu_count
         print(f"    Instance {i}: GPU {gpu_id}")
 
-    if total_instances > 4:
+    streams_per_instance = 4 if args.enable_overhead_cameras else 2
+    max_instances = gpu_count * (8 // streams_per_instance)
+    if total_instances > max_instances:
         raise ValueError(
             f"total_instances={total_instances} exceeds the NVENC limit of 8 "
-            f"simultaneous encoding sessions per GPU. "
-            f"Please reduce the number of total instances to 4 or fewer."
+            f"simultaneous encoding sessions per GPU "
+            f"({streams_per_instance} streams/instance with "
+            f"enable_overhead_cameras={args.enable_overhead_cameras}, "
+            f"gpu_count={gpu_count}). "
+            f"Please reduce the number of total instances to {max_instances} "
+            f"or fewer, or raise --gpu_count."
         )
 
     # Validate that all skin PNGs have pre-cached .customskin files
@@ -845,6 +1156,18 @@ def main():
             flatland_world_disable_structures=bool(
                 args.flatland_world_disable_structures
             ),
+            # Recording rate
+            fps=args.fps,
+            # Overhead (top-down) cameras
+            enable_overhead_cameras=bool(args.enable_overhead_cameras),
+            camera_output_overhead_alpha_base=args.camera_output_overhead_alpha_base,
+            camera_output_overhead_bravo_base=args.camera_output_overhead_bravo_base,
+            camera_data_overhead_alpha_base=args.camera_data_overhead_alpha_base,
+            camera_data_overhead_bravo_base=args.camera_data_overhead_bravo_base,
+            camera_overhead_alpha_vnc_base=args.camera_overhead_alpha_vnc_base,
+            camera_overhead_alpha_novnc_base=args.camera_overhead_alpha_novnc_base,
+            camera_overhead_bravo_vnc_base=args.camera_overhead_bravo_vnc_base,
+            camera_overhead_bravo_novnc_base=args.camera_overhead_bravo_novnc_base,
         )
 
         # Write compose file
@@ -939,6 +1262,39 @@ def main():
     print(
         f"  Camera Bravo noVNC: {args.camera_bravo_novnc_base}..{args.camera_bravo_novnc_base + args.vnc_step * (total_instances - 1)}"
     )
+    if args.enable_overhead_cameras:
+        overhead_alpha_novncs = {
+            args.camera_overhead_alpha_novnc_base + args.vnc_step * i
+            for i in range(total_instances)
+        }
+        overhead_bravo_novncs = {
+            args.camera_overhead_bravo_novnc_base + args.vnc_step * i
+            for i in range(total_instances)
+        }
+        assert (
+            len(overhead_alpha_novncs) == total_instances
+        ), "overhead alpha noVNC port collisions detected"
+        assert (
+            len(overhead_bravo_novncs) == total_instances
+        ), "overhead bravo noVNC port collisions detected"
+        print(
+            f"  Overhead Camera Alpha noVNC: {args.camera_overhead_alpha_novnc_base}.."
+            f"{args.camera_overhead_alpha_novnc_base + args.vnc_step * (total_instances - 1)}"
+        )
+        print(
+            f"  Overhead Camera Bravo noVNC: {args.camera_overhead_bravo_novnc_base}.."
+            f"{args.camera_overhead_bravo_novnc_base + args.vnc_step * (total_instances - 1)}"
+        )
+        # Cross-category check: the per-category checks above only catch
+        # collisions within the same camera (e.g. two instances both using
+        # alpha's noVNC port), not across cameras (e.g. instance N+1's
+        # camera_alpha landing on instance N's overhead_bravo port) — which
+        # is exactly the bug an under-sized --vnc_step produces.
+        all_novncs = alpha_novncs | bravo_novncs | overhead_alpha_novncs | overhead_bravo_novncs
+        assert len(all_novncs) == 4 * total_instances, (
+            "noVNC port collision across camera types detected — "
+            "--vnc_step is too small for 4 camera containers/instance"
+        )
     print(
         "Bridge network services (act_recorder, controller) use internal communication only."
     )
