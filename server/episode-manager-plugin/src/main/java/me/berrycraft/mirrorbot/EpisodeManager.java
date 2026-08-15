@@ -29,6 +29,8 @@ public class EpisodeManager extends JavaPlugin implements Listener {
     private final Map<String, File> activeSkinSelections  = new ConcurrentHashMap<>();
     private final Map<UUID, UUID> activeSpectatorsByController = new ConcurrentHashMap<>();
     private final Map<UUID, UUID> controllerBySpectator = new ConcurrentHashMap<>();
+    private final Map<UUID, UUID> activeOverheadsByController = new ConcurrentHashMap<>();
+    private final Map<UUID, UUID> controllerByOverhead = new ConcurrentHashMap<>();
 
     private boolean episodeRunning = false;
 
@@ -155,6 +157,8 @@ public class EpisodeManager extends JavaPlugin implements Listener {
         activeCameraControllers.clear();
         activeSpectatorsByController.clear();
         controllerBySpectator.clear();
+        activeOverheadsByController.clear();
+        controllerByOverhead.clear();
 
         for (StartConfig cfg : configs) {
 
@@ -181,6 +185,18 @@ public class EpisodeManager extends JavaPlugin implements Listener {
                 spectator.setGameMode(GameMode.SPECTATOR);
                 activeSpectatorsByController.put(controller.getUniqueId(), spectator.getUniqueId());
                 controllerBySpectator.put(spectator.getUniqueId(), controller.getUniqueId());
+            }
+
+            // Optional overhead camera bot (e.g., OverheadAlpha). Note: Minecraft
+            // usernames are capped at 16 chars, so this can't be "OverheadCameraAlpha".
+            Player overhead = Bukkit.getPlayerExact("Overhead" + cfg.controller);
+            if (overhead != null) {
+                // Spectator mode: no rendered arm/hand, no hotbar/health/hunger HUD,
+                // and inherent noclip/no-gravity — a "bodiless" top-down camera.
+                overhead.setGameMode(GameMode.SPECTATOR);
+                activeOverheadsByController.put(controller.getUniqueId(), overhead.getUniqueId());
+                controllerByOverhead.put(overhead.getUniqueId(), controller.getUniqueId());
+                cameraManager.prepareCamera(overhead);
             }
 
             cameraManager.prepareCamera(camera);
@@ -217,6 +233,8 @@ public class EpisodeManager extends JavaPlugin implements Listener {
         }
         activeSpectatorsByController.clear();
         controllerBySpectator.clear();
+        activeOverheadsByController.clear();
+        controllerByOverhead.clear();
 
         Bukkit.broadcastMessage(ChatColor.RED + "[Episode] Episode stopped.");
     }
@@ -241,6 +259,10 @@ public class EpisodeManager extends JavaPlugin implements Listener {
                 for (UUID camId : activeCameraControllers.keySet()) {
                     Player cam = Bukkit.getPlayer(camId);
                     if (cam != null) spectator.hidePlayer(this, cam);
+                }
+                for (UUID overheadId : controllerByOverhead.keySet()) {
+                    Player overhead = Bukkit.getPlayer(overheadId);
+                    if (overhead != null) spectator.hidePlayer(this, overhead);
                 }
             }
         }
@@ -282,6 +304,10 @@ public class EpisodeManager extends JavaPlugin implements Listener {
             Player cam = Bukkit.getPlayerExact(camName);
             if (cam != null) p.hidePlayer(this, cam);
         }
+        for (UUID overheadId : controllerByOverhead.keySet()) {
+            Player overhead = Bukkit.getPlayer(overheadId);
+            if (overhead != null) p.hidePlayer(this, overhead);
+        }
     }
 
     // =====================================================================================
@@ -308,6 +334,8 @@ public class EpisodeManager extends JavaPlugin implements Listener {
         } else {
             attachSpectatorIfMatches(p);
         }
+
+        attachOverheadIfMatches(p);
     }
 
     @EventHandler
@@ -332,7 +360,8 @@ public class EpisodeManager extends JavaPlugin implements Listener {
 
     public boolean isCamera(Player p) {
         return activeCameraControllers.containsKey(p.getUniqueId()) ||
-               controllerToCamera.containsValue(p.getName());
+               controllerToCamera.containsValue(p.getName()) ||
+               controllerByOverhead.containsKey(p.getUniqueId());
     }
 
     public boolean isSpectator(Player p) {
@@ -345,6 +374,10 @@ public class EpisodeManager extends JavaPlugin implements Listener {
 
     public UUID getSpectatorForController(UUID controllerId) {
         return activeSpectatorsByController.get(controllerId);
+    }
+
+    public UUID getOverheadForController(UUID controllerId) {
+        return activeOverheadsByController.get(controllerId);
     }
 
     public Map<UUID, UUID> getSpectatorsByController() {
@@ -362,6 +395,24 @@ public class EpisodeManager extends JavaPlugin implements Listener {
                     p.setGameMode(GameMode.SPECTATOR);
                     activeSpectatorsByController.put(controller.getUniqueId(), p.getUniqueId());
                     controllerBySpectator.put(p.getUniqueId(), controller.getUniqueId());
+                }
+                break;
+            }
+        }
+    }
+
+    private void attachOverheadIfMatches(Player p) {
+        if (!episodeRunning) return;
+        if (controllerByOverhead.containsKey(p.getUniqueId())) return;
+
+        for (String controllerName : controllerToCamera.keySet()) {
+            if (("Overhead" + controllerName).equals(p.getName())) {
+                Player controller = Bukkit.getPlayerExact(controllerName);
+                if (controller != null) {
+                    p.setGameMode(GameMode.SPECTATOR);
+                    activeOverheadsByController.put(controller.getUniqueId(), p.getUniqueId());
+                    controllerByOverhead.put(p.getUniqueId(), controller.getUniqueId());
+                    cameraManager.prepareCamera(p);
                 }
                 break;
             }

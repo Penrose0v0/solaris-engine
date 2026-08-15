@@ -47,8 +47,9 @@ import java.util.*;
 public class CameraManager implements Listener {
 
     private static final long MIN_SPRINT_MS = 200L;
-    private static final double SNEAK_SCALE = 0.785; 
+    private static final double SNEAK_SCALE = 0.785;
     private static final double NORMAL_SCALE = 1.0;
+    private static final double OVERHEAD_HEIGHT = 20.0;
 
     private final EpisodeManager plugin;
     private final ProtocolManager protocol;
@@ -179,6 +180,18 @@ public class CameraManager implements Listener {
                             spectator.setGameMode(GameMode.SPECTATOR);
                         }
                         spectator.teleportAsync(cLoc.clone());
+                    }
+                }
+
+                // Keep the overhead camera synced: directly above the controller, looking straight down
+                UUID overheadId = plugin.getOverheadForController(controller.getUniqueId());
+                if (overheadId != null) {
+                    Player overhead = Bukkit.getPlayer(overheadId);
+                    if (overhead != null && overhead.isOnline()) {
+                        Location overheadLoc = cLoc.clone();
+                        overheadLoc.setY(cLoc.getY() + OVERHEAD_HEIGHT);
+                        overheadLoc.setPitch(90f);
+                        overhead.teleportAsync(overheadLoc);
                     }
                 }
             }
