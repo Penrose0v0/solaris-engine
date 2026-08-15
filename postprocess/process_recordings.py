@@ -275,11 +275,15 @@ def _write_frames_by_index(
     output_path: Path,
 ) -> None:
     """Extract frames from camera recording by seeking to each frame index.
-    
+
     This handles duplicate frame indices (multiple actions per frame) correctly.
+
+    Frames are piped to ffmpeg and encoded as H.264 (yuv420p) rather than
+    written via cv2.VideoWriter("mp4v"): MPEG-4 Part 2 output is not playable
+    in VS Code / browsers, H.264 is.
     """
     start_time = time.time()
-    
+
     if not frame_indices:
         raise ValueError("No frames requested for alignment")
 
@@ -290,56 +294,70 @@ def _write_frames_by_index(
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
-    
-    setup_time = time.time() - start_time
-    read_start = time.time()
+    writer = subprocess.Popen(
+        [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-f", "rawvideo", "-pix_fmt", "bgr24",
+            "-s", f"{width}x{height}", "-r", f"{fps}",
+            "-i", "-",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            str(output_path),
+        ],
+        stdin=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    def _abort(message: str) -> None:
+        cap.release()
+        writer.kill()
+        writer.wait()
+        raise RuntimeError(message)
 
     # Read and write frames, caching the last frame to handle duplicates efficiently
     last_frame_idx = -1
     last_frame = None
-    seeks_count = 0
-    reads_count = 0
-    cache_hits = 0
-    
-    for i, frame_idx in enumerate(frame_indices):
-        if frame_idx < 0 or frame_idx >= total_frames:
-            cap.release()
-            writer.release()
-            raise RuntimeError(
-                f"Action {i} maps to frame {frame_idx}, but camera only has {total_frames} frames"
-            )
-        
-        # Reuse cached frame if it's a duplicate
-        if frame_idx == last_frame_idx and last_frame is not None:
-            writer.write(last_frame)
-            cache_hits += 1
-        else:
-            # Only seek if we need to go backwards or skip frames
-            # For sequential reads, just continue reading
-            if frame_idx != last_frame_idx + 1:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                seeks_count += 1
-            
-            ret, frame = cap.read()
-            reads_count += 1
-            
-            if not ret:
-                cap.release()
-                writer.release()
-                raise RuntimeError(
-                    f"Failed to read frame {frame_idx} from camera recording"
+
+    try:
+        for i, frame_idx in enumerate(frame_indices):
+            if frame_idx < 0 or frame_idx >= total_frames:
+                _abort(
+                    f"Action {i} maps to frame {frame_idx}, but camera only has {total_frames} frames"
                 )
-            
-            writer.write(frame)
-            last_frame_idx = frame_idx
-            last_frame = frame.copy()  # Cache for potential duplicates
-    
-    writer.release()
+
+            # Reuse cached frame if it's a duplicate
+            if frame_idx == last_frame_idx and last_frame is not None:
+                writer.stdin.write(last_frame.tobytes())
+            else:
+                # Only seek if we need to go backwards or skip frames
+                # For sequential reads, just continue reading
+                if frame_idx != last_frame_idx + 1:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+
+                ret, frame = cap.read()
+                if not ret:
+                    _abort(f"Failed to read frame {frame_idx} from camera recording")
+
+                writer.stdin.write(frame.tobytes())
+                last_frame_idx = frame_idx
+                last_frame = frame.copy()  # Cache for potential duplicates
+    except BrokenPipeError:
+        cap.release()
+        writer.stdin.close()
+        writer.wait()
+        stderr = writer.stderr.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"ffmpeg encoder died while writing {output_path}: {stderr}")
+
     cap.release()
-    
+    writer.stdin.close()
+    returncode = writer.wait()
+    if returncode != 0:
+        stderr = writer.stderr.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"ffmpeg encoding failed (rc={returncode}) for {output_path}: {stderr}"
+        )
+
     total_time = time.time() - start_time
     print(f"[align] Extracted {len(frame_indices)} frames in {total_time:.1f}s")
 
@@ -508,6 +526,7 @@ class BotConfig:
     actions_suffix: str
     camera_meta: Path
     output_dir: Path
+    video_suffix: str = "_camera"
 
 
 def parse_args(argv: Iterable[str]) -> argparse.Namespace:
@@ -543,47 +562,57 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
         default=None,
         help="Process single episode file (overrides directory processing)",
     )
+    parser.add_argument(
+        "--overhead",
+        action="store_true",
+        help="Align the overhead (top-down) camera recording instead of the "
+        "first-person one; expects overhead_camera_<bot>_meta.json under the "
+        "camera prefix and names outputs *_overhead_camera.mp4",
+    )
     return parser.parse_args(list(argv))
 
 
 def build_bot_config(
-    actions_dir: Path, camera_prefix: Path, bot: str, output_base: Optional[Path]
+    actions_dir: Path,
+    camera_prefix: Path,
+    bot: str,
+    output_base: Optional[Path],
+    overhead: bool = False,
 ) -> Dict[str, BotConfig]:
     """Return BotConfig mapping for the selected bot.
 
     - Output directory defaults to ./aligned/<bot> unless overridden by --output-dir.
     - camera_prefix may already be an output_{alpha|bravo}/<instance> directory
       (as in orchestration); handle both prefixed and non-prefixed forms.
+    - With overhead=True, the meta file is overhead_camera_<bot>_meta.json under
+      output_overhead_{alpha|bravo}/ and outputs are named *_overhead_camera.mp4.
     """
     output_dir = (output_base or Path.cwd() / "aligned")
-    if bot == "Alpha":
-        # If camera_prefix already points into output_alpha, use it directly
-        if "output_alpha" in str(camera_prefix):
-            camera_meta = camera_prefix / "camera_alpha_meta.json"
-        else:
-            camera_meta = camera_prefix / "output_alpha" / "camera_alpha_meta.json"
-        return {
-            "Alpha": BotConfig(
-                name="Alpha",
-                actions_suffix="_Alpha_",
-                camera_meta=camera_meta,
-                output_dir=output_dir,
-            )
-        }
+    bot_lower = bot.lower()
+    if overhead:
+        subdir = f"output_overhead_{bot_lower}"
+        meta_name = f"overhead_camera_{bot_lower}_meta.json"
+        video_suffix = "_overhead_camera"
     else:
-        # If camera_prefix already points into output_bravo, use it directly
-        if "output_bravo" in str(camera_prefix):
-            camera_meta = camera_prefix / "camera_bravo_meta.json"
-        else:
-            camera_meta = camera_prefix / "output_bravo" / "camera_bravo_meta.json"
-        return {
-            "Bravo": BotConfig(
-                name="Bravo",
-                actions_suffix="_Bravo_",
-                camera_meta=camera_meta,
-                output_dir=output_dir,
-            )
-        }
+        subdir = f"output_{bot_lower}"
+        meta_name = f"camera_{bot_lower}_meta.json"
+        video_suffix = "_camera"
+
+    # If camera_prefix already points into the camera subdir, use it directly
+    if subdir in str(camera_prefix):
+        camera_meta = camera_prefix / meta_name
+    else:
+        camera_meta = camera_prefix / subdir / meta_name
+
+    return {
+        bot: BotConfig(
+            name=bot,
+            actions_suffix=f"_{bot}_",
+            camera_meta=camera_meta,
+            output_dir=output_dir,
+            video_suffix=video_suffix,
+        )
+    }
 
 
 def bot_for_actions(path: Path, configs: Dict[str, BotConfig]) -> Optional[BotConfig]:
@@ -621,8 +650,8 @@ def process_actions(
         ensure_metadata(config.camera_meta)
         config.output_dir.mkdir(parents=True, exist_ok=True)
 
-        output_video = config.output_dir / f"{actions_path.stem}_camera.mp4"
-        output_meta = config.output_dir / f"{actions_path.stem}_camera_meta.json"
+        output_video = config.output_dir / f"{actions_path.stem}{config.video_suffix}.mp4"
+        output_meta = config.output_dir / f"{actions_path.stem}{config.video_suffix}_meta.json"
 
         alignment_input = AlignmentInput(
             actions_path=actions_path,
@@ -670,8 +699,8 @@ def process_single_episode(
         ensure_metadata(config.camera_meta)
         config.output_dir.mkdir(parents=True, exist_ok=True)
 
-        output_video = config.output_dir / f"{episode_path.stem}_camera.mp4"
-        output_meta = config.output_dir / f"{episode_path.stem}_camera_meta.json"
+        output_video = config.output_dir / f"{episode_path.stem}{config.video_suffix}.mp4"
+        output_meta = config.output_dir / f"{episode_path.stem}{config.video_suffix}_meta.json"
 
         alignment_input = AlignmentInput(
             actions_path=episode_path,
@@ -708,6 +737,7 @@ def main(argv: Iterable[str]) -> int:
         camera_prefix=args.camera_prefix.resolve(),
         bot=args.bot,
         output_base=args.output_dir.resolve() if args.output_dir else None,
+        overhead=args.overhead,
     )
 
     # Single-episode fast path if provided by orchestrator
