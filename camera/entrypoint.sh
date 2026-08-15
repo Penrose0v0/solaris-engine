@@ -104,6 +104,16 @@ session.screen0.toolbar.visible:        false
 EOF
 fi
 
+# Fluxbox apps: try name-based match as a first pass (may not fire if the
+# window title differs from "Minecraft*").
+cat >"${FLUXBOX_DIR}/apps" <<'EOF'
+[app] (name=Minecraft*)
+  [Deco] {NONE}
+  [Position] (UPPERLEFT) {0 0}
+  [Dimensions] {1280 720}
+[end]
+EOF
+
 fluxbox &
 PIDS="$PIDS $!"
 
@@ -132,6 +142,45 @@ echo "[client] Launching Minecraft with VirtualGL (GPU acceleration)"
 vglrun -d "$VGL_DISPLAY" python3 /app/launch_minecraft.py &
 GAME_PID=$!
 PIDS="$PIDS $GAME_PID"
+
+# Wait for Minecraft's window then force it to (0,0).
+# Strategy:
+#   - Skip --onlyvisible: GLFW windows are mapped but may not pass the
+#     "visible" test used by xdotool on Xvfb.
+#   - Try WM_NAME and WM_CLASS matches so we catch whatever LWJGL sets.
+#   - Repeat the move for 30 s after first find in case the WM or LWJGL
+#     repositions the window after creation.
+(
+  found_wid=""
+  move_count=0
+  for i in $(seq 1 120); do
+    # Try name first, then class, then any window of the right size
+    WID=$(xdotool search --name "Minecraft" 2>/dev/null | head -1)
+    [ -z "$WID" ] && WID=$(xdotool search --class "Minecraft" 2>/dev/null | head -1)
+    [ -z "$WID" ] && WID=$(xdotool search --class "minecraft" 2>/dev/null | head -1)
+    if [ -n "$WID" ]; then
+      if [ "$WID" != "$found_wid" ]; then
+        found_wid="$WID"
+        title=$(xdotool getwindowname "$WID" 2>/dev/null || echo "(unknown)")
+        echo "[client] found window $WID title='$title'"
+      fi
+      xdotool windowmove "$WID" 0 0 2>/dev/null || true
+      xdotool windowsize "$WID" "${WIDTH}" "${HEIGHT}" 2>/dev/null || true
+      move_count=$((move_count + 1))
+      echo "[client] move #${move_count}: window $WID -> (0,0) ${WIDTH}x${HEIGHT}"
+      [ "$move_count" -ge 30 ] && break
+    else
+      # Diagnostic: print whatever windows exist every 10 s
+      if [ $((i % 10)) -eq 0 ]; then
+        all=$(xdotool search "" 2>/dev/null | tr '\n' ' ')
+        echo "[client] tick $i: no Minecraft window yet; all wids: ${all:-none}"
+      fi
+    fi
+    sleep 1
+  done
+  [ -z "$found_wid" ] && echo "[client] WARNING: never found Minecraft window in 120 s"
+) &
+PIDS="$PIDS $!"
 
 if [ "$ENABLE_RECORDING" = "1" ]; then
   # Small delay so the Minecraft window stabilizes before capturing.

@@ -65,6 +65,13 @@ RUN pip3 install --no-cache-dir \
     minecraft-launcher-lib==6.5 \
     requests==2.31.0
 
+# Register NVIDIA EGL ICD so GLVND picks libEGL_nvidia.so.0 over Mesa.
+# The library is injected by nvidia-container-toolkit at runtime; this file
+# tells GLVND where to find it.
+RUN mkdir -p /usr/share/glvnd/egl_vendor.d && \
+    printf '{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}\n' \
+    > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+
 WORKDIR /app
 
 # Copy application scripts
