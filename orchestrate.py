@@ -180,9 +180,11 @@ class InstanceManager:
 
             if result.returncode == 0:
                 print(f"✅ Started: {instance_name}")
-                # Begin per-service log capture
-                idx = self._instance_index_from_stem(instance_name)
-                services = [s.format(i=idx) for s in self.service_bases]
+                # Begin per-service log capture. Read service names directly
+                # from the compose file so any service present there (e.g.
+                # optional overhead cameras) gets its logs captured, not just
+                # the fixed set in self.service_bases.
+                services = self._services_from_compose_file(compose_file)
                 self.instance_logs[instance_name] = self.log_manager.start_for_instance(
                     compose_file, instance_name, services
                 )
@@ -469,6 +471,25 @@ class InstanceManager:
         except Exception:
             return 0
 
+    def _services_from_compose_file(self, compose_file: Path) -> List[str]:
+        """Read the actual service names out of a generated compose file.
+
+        Falls back to the fixed service_bases template (formatted with the
+        instance index) if the file can't be parsed, so log capture still
+        works even on a malformed/hand-edited compose file.
+        """
+        try:
+            with open(compose_file, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh)
+            services = list((data or {}).get("services", {}).keys())
+            if services:
+                return services
+        except Exception as e:
+            print(f"⚠️  Could not read services from {compose_file}: {e}")
+
+        idx = self._instance_index_from_stem(compose_file.stem)
+        return [s.format(i=idx) for s in self.service_bases]
+
     def _print_vnc_urls(self, compose_file: Path, instance_name: str) -> None:
         try:
             with open(compose_file, "r", encoding="utf-8") as fh:
@@ -519,6 +540,9 @@ class InstanceManager:
             "--output-dir",
             output_dir,
         ]
+
+        if job.get("overhead"):
+            cmd.append("--overhead")
 
         if comparison_video:
             cmd.append("--comparison-video")
@@ -630,6 +654,22 @@ class InstanceManager:
                 }
             )
 
+            # Overhead (top-down) camera recording, when that camera was enabled
+            overhead_prefix = (
+                camera_root / f"output_overhead_{bot.lower()}" / str(instance_id)
+            )
+            if overhead_prefix.exists():
+                jobs.append(
+                    {
+                        "episode_file": json_path,
+                        "bot": bot,
+                        "instance_id": instance_id,
+                        "output_dir": actions_dir,
+                        "camera_prefix": overhead_prefix,
+                        "overhead": True,
+                    }
+                )
+
         if not jobs:
             print("No episodes found to process.")
             return
@@ -662,8 +702,9 @@ class InstanceManager:
                     completed += 1
                     status = "✅" if success else "❌"
                     episode_name = job["episode_file"].stem
+                    camera_kind = "overhead" if job.get("overhead") else "side"
                     print(
-                        f"[{completed}/{len(jobs)}] {status} {job['bot']} instance {job['instance_id']}: {episode_name}"
+                        f"[{completed}/{len(jobs)}] {status} {job['bot']} instance {job['instance_id']} [{camera_kind}]: {episode_name}"
                     )
                     if not success:
                         failed += 1
