@@ -216,6 +216,9 @@ async function saveEpisodeInfo({
       episodeInstance?._episodeRecordingStarted,
     ),
     eval_metadata: episodeInstance?._evalMetadata || {},
+    // Episode-type-specific top-level fields (e.g. buildStructure's
+    // structure_type). Episodes opt in by setting this._episodeMetadata.
+    ...(episodeInstance?._episodeMetadata || {}),
   };
 
   await fs.writeFile(filePath, JSON.stringify(payload, null, 2));
