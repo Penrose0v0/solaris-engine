@@ -1,6 +1,6 @@
 const Vec3 = require("vec3").Vec3;
 
-const { GoalNear } = require("../utils/bot-factory");
+const { GoalNearXZ } = require("../utils/bot-factory");
 const {
   lookAtBot,
   sleep,
@@ -12,10 +12,21 @@ const { BaseEpisode } = require("./base-episode");
 
 // Constants for orbit behavior
 const NUM_CHECKPOINTS = 8; // Number of checkpoints around the circle
-const CHECKPOINT_REACH_DISTANCE = 1.5; // How close to get to checkpoint (blocks)
+const CHECKPOINT_REACH_DISTANCE = 1.5; // How close (horizontally) to get to checkpoint (blocks)
+const CHECKPOINT_REACH_SLACK = 1.0; // Extra tolerance for pathfinder's block-rounded arrival
 const CHECKPOINT_TIMEOUT_MS = 5000; // Maximum time to reach each checkpoint (5 seconds)
-const EYE_CONTACT_DURATION_MS = 1000; // How long to look at partner at each checkpoint
-const CAMERA_SPEED_DEGREES_PER_SEC = 90; // Camera rotation speed
+const CHECKPOINT_IDLE_GRACE_MS = 800; // Let the pathfinder compute a path before judging idleness
+const CHECKPOINT_IDLE_CHECKS = 5; // 5 x 100ms idle => treat as arrived / gave up
+// "Moving" but not getting anywhere (digging through / pushing against
+// terrain): skip ahead rather than stand still until the timeout.
+const CHECKPOINT_STUCK_WINDOW_MS = 1500;
+const CHECKPOINT_STUCK_MIN_PROGRESS = 0.3; // blocks of XZ progress expected per window
+// Glance at the partner on arrival, but never stand still longer than this:
+// the pathfinder overrides look direction every tick while moving, so the
+// glance can only happen while stopped, and long stops starve downstream
+// camera-translation measurement.
+const CHECKPOINT_GLANCE_MAX_MS = 500;
+const CAMERA_SPEED_DEGREES_PER_SEC = 171; // Fast glance so it fits in the budget
 
 /**
  * Calculate checkpoint positions around a circle
@@ -73,108 +84,113 @@ async function executeOrbitWithCheckpoints(
   for (let i = 0; i < checkpoints.length; i++) {
     const checkpoint = checkpoints[i];
 
-    // Get ground Y coordinate for checkpoint
-    const groundPos = await land_pos(bot, rcon, checkpoint.x, checkpoint.z);
+    // Get ground Y coordinate for checkpoint (land_pos is sync and takes
+    // (bot, x, z); on unloaded chunks it returns null -> keep circle Y).
+    const groundPos = land_pos(bot, checkpoint.x, checkpoint.z);
     const targetPos = groundPos || checkpoint;
 
     console.log(
       `[${bot.username}] 📍 Checkpoint ${i + 1}/${checkpoints.length}: ` +
-        `(${targetPos.x.toFixed(1)}, ${targetPos.y.toFixed(1)}, ${targetPos.z.toFixed(1)})`,
-    );
-    console.log(
-      `[${bot.username}] 📊 Current position: ` +
-        `(${bot.entity.position.x.toFixed(1)}, ${bot.entity.position.y.toFixed(1)}, ${bot.entity.position.z.toFixed(1)})`,
-    );
-    console.log(
-      `[${bot.username}] 📏 Distance to checkpoint: ${bot.entity.position.distanceTo(targetPos).toFixed(2)} blocks`,
+        `(${targetPos.x.toFixed(1)}, ${targetPos.y.toFixed(1)}, ${targetPos.z.toFixed(1)}) ` +
+        `from (${bot.entity.position.x.toFixed(1)}, ${bot.entity.position.y.toFixed(1)}, ${bot.entity.position.z.toFixed(1)})`,
     );
 
-    // Check pathfinder state before setting goal
-    console.log(
-      `[${bot.username}] 🔍 Pathfinder state BEFORE: isMoving=${bot.pathfinder.isMoving()}, goal=${bot.pathfinder.goal ? "SET" : "NULL"}`,
-    );
-
-    // Set pathfinder goal to checkpoint
-    console.log(
-      `[${bot.username}] 🚀 Starting pathfinder to checkpoint ${i + 1}`,
-    );
-    const goal = new GoalNear(
+    // Set the next goal immediately: setGoal() replaces any active goal, so
+    // the bot rolls straight from one checkpoint into the next leg without a
+    // stop-and-restart. Reach is judged horizontally: on uneven terrain the
+    // bot's Y legitimately differs from the circle's Y, and a 3D check would
+    // sit at the checkpoint until the timeout.
+    const goal = new GoalNearXZ(
       targetPos.x,
-      targetPos.y,
       targetPos.z,
       CHECKPOINT_REACH_DISTANCE,
     );
     bot.pathfinder.setGoal(goal);
 
-    // Verify goal was set
-    await sleep(200); // Give pathfinder time to process
-    console.log(
-      `[${bot.username}] 🔍 Pathfinder state AFTER: isMoving=${bot.pathfinder.isMoving()}, goal=${bot.pathfinder.goal ? "SET" : "NULL"}`,
-    );
-
     // Wait until bot reaches checkpoint or timeout
-    let reached = false;
-    let timedOut = false;
     let checkCount = 0;
+    let idleChecks = 0;
     const checkpointStartTime = Date.now();
+    let progressPos = bot.entity.position.clone();
+    let progressTime = checkpointStartTime;
 
-    while (!reached && !timedOut) {
-      const distance = bot.entity.position.distanceTo(targetPos);
+    while (true) {
+      const distance = bot.entity.position.xzDistanceTo(targetPos);
       const elapsed = Date.now() - checkpointStartTime;
+      const moving = bot.pathfinder.isMoving();
+
+      // Track XZ progress; if none over a window, we're stuck against terrain.
+      const now = Date.now();
+      if (
+        bot.entity.position.xzDistanceTo(progressPos) >=
+        CHECKPOINT_STUCK_MIN_PROGRESS
+      ) {
+        progressPos = bot.entity.position.clone();
+        progressTime = now;
+      } else if (
+        elapsed > CHECKPOINT_IDLE_GRACE_MS &&
+        now - progressTime > CHECKPOINT_STUCK_WINDOW_MS
+      ) {
+        console.log(
+          `[${bot.username}] ↪️ No progress toward checkpoint ${i + 1} for ${((now - progressTime) / 1000).toFixed(1)}s ` +
+            `(xz ${distance.toFixed(2)}, isMoving=${moving}); moving on`,
+        );
+        break;
+      }
 
       // Log every 2 seconds (20 checks)
       if (checkCount % 20 === 0) {
         console.log(
-          `[${bot.username}] 🔄 Moving to checkpoint ${i + 1}: distance=${distance.toFixed(2)}, ` +
-            `isMoving=${bot.pathfinder.isMoving()}, pos=(${bot.entity.position.x.toFixed(1)}, ${bot.entity.position.z.toFixed(1)}), ` +
+          `[${bot.username}] 🔄 Moving to checkpoint ${i + 1}: xzDistance=${distance.toFixed(2)}, ` +
+            `isMoving=${moving}, pos=(${bot.entity.position.x.toFixed(1)}, ${bot.entity.position.z.toFixed(1)}), ` +
             `elapsed=${(elapsed / 1000).toFixed(1)}s`,
         );
       }
 
-      if (distance <= CHECKPOINT_REACH_DISTANCE) {
-        reached = true;
+      // The pathfinder judges GoalNearXZ on integer block coords, so it may
+      // stop up to ~1 block short of the exact float target. Accept that
+      // instead of standing still until the timeout.
+      if (distance <= CHECKPOINT_REACH_DISTANCE + CHECKPOINT_REACH_SLACK) {
         console.log(
-          `[${bot.username}] ✅ Reached checkpoint ${i + 1} in ${(elapsed / 1000).toFixed(1)}s`,
+          `[${bot.username}] ✅ Reached checkpoint ${i + 1} in ${(elapsed / 1000).toFixed(1)}s (xz ${distance.toFixed(2)})`,
         );
-        break; // Exit immediately when reached
-      } else if (elapsed > CHECKPOINT_TIMEOUT_MS) {
-        timedOut = true;
+        break;
+      }
+
+      // Pathfinder idle for a while after start = it thinks it's done or
+      // found no path. Either way, waiting longer only adds a stationary
+      // stretch; move on to the next checkpoint.
+      idleChecks = !moving && elapsed > CHECKPOINT_IDLE_GRACE_MS ? idleChecks + 1 : 0;
+      if (idleChecks >= CHECKPOINT_IDLE_CHECKS) {
+        console.log(
+          `[${bot.username}] ↪️ Pathfinder idle at checkpoint ${i + 1} after ${(elapsed / 1000).toFixed(1)}s ` +
+            `(xz ${distance.toFixed(2)}); moving on`,
+        );
+        break;
+      }
+
+      if (elapsed > CHECKPOINT_TIMEOUT_MS) {
         console.log(
           `[${bot.username}] ⏰ Timeout at checkpoint ${i + 1} after ${(elapsed / 1000).toFixed(1)}s ` +
-            `(distance: ${distance.toFixed(2)} blocks, target: ${CHECKPOINT_REACH_DISTANCE} blocks)`,
+            `(xzDistance: ${distance.toFixed(2)} blocks, target: ${CHECKPOINT_REACH_DISTANCE} blocks)`,
         );
-        break; // Exit immediately on timeout
+        break;
       }
 
       checkCount++;
       await sleep(100); // Check every 100ms
     }
 
-    // Stop movement at checkpoint (but keep pathfinder active for next checkpoint)
-    console.log(
-      `[${bot.username}] 🛑 Stopping movement at checkpoint ${i + 1}`,
-    );
-    bot.pathfinder.setGoal(null); // Clear current goal
-    console.log(
-      `[${bot.username}] 🔍 Goal cleared: goal=${bot.pathfinder.goal ? "STILL SET" : "NULL"}`,
-    );
-
-    // Manually stop control states (don't use stopAll which calls pathfinder.stop())
-    bot.setControlState("forward", false);
-    bot.setControlState("back", false);
-    bot.setControlState("left", false);
-    bot.setControlState("right", false);
-    bot.setControlState("sprint", false);
-
-    // Look at other bot
-    console.log(`[${bot.username}] 👀 Looking at ${otherBotName}`);
-    await lookAtBot(bot, otherBotName, CAMERA_SPEED_DEGREES_PER_SEC);
-
-    // Hold eye contact
-    console.log(
-      `[${bot.username}] ⏸️ Holding eye contact for ${EYE_CONTACT_DURATION_MS}ms`,
-    );
-    await sleep(EYE_CONTACT_DURATION_MS);
+    // Quick glance at the partner, hard-capped so the stop stays short. The
+    // pathfinder takes the look direction back over as soon as the next goal
+    // is set, which is what we want.
+    console.log(`[${bot.username}] 👀 Glancing at ${otherBotName}`);
+    await Promise.race([
+      lookAtBot(bot, otherBotName, CAMERA_SPEED_DEGREES_PER_SEC, {
+        randomized: false,
+      }),
+      sleep(CHECKPOINT_GLANCE_MAX_MS),
+    ]);
 
     console.log(
       `[${bot.username}] ✅ Checkpoint ${i + 1} complete, continuing to next...`,
