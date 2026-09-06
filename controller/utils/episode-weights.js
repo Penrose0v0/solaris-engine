@@ -23,6 +23,7 @@ const episodeTypicalLengths = {
   turnToLookEval: 60,
   turnToLookOppositeEval: 60,
   trajYawSweepEval: 15,
+  trajPitchSweepEval: 15,
 };
 
 /**
