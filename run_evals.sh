@@ -30,7 +30,7 @@ EVAL_TIME_SET_DAY=${EVAL_TIME_SET_DAY:-1}
 
 # List of eval episode types to run
 # structureNoPlaceEval is used for debugging, but not part of the eval dataset
-EVAL_TYPES=("rotationEval" "translationEval" "structureEval" "turnToLookEval" "turnToLookOppositeEval" "bothLookAwayEval" "oneLooksAwayEval")
+EVAL_TYPES=("trajStaticEval" "trajYawSweepEval" "trajPitchSweepEval" "trajForwardEval" "trajOrbitEval")
 
 for BATCH_NAME in "${EVAL_TYPES[@]}"; do
     echo "=========================================="
@@ -81,7 +81,7 @@ for BATCH_NAME in "${EVAL_TYPES[@]}"; do
     python3 orchestrate.py stop --compose-dir "$COMPOSE_DIR"
     # Fix Docker root-owned file permissions so re-runs and postprocessing work
     docker run --rm -v "$(pwd)/$BATCH_DIR:/workspace" alpine chown -R "$(id -u):$(id -g)" /workspace
-    python3 orchestrate.py postprocess --compose-dir "$COMPOSE_DIR" --workers 32 --output-dir "$BATCH_DIR/aligned"
+    PATH=$HOME/.local/bin:$PATH .venv-postprocess/bin/python orchestrate.py postprocess --compose-dir "$COMPOSE_DIR" --workers 32 --output-dir "$BATCH_DIR/aligned"
 
     echo ""
     echo "Completed eval: $BATCH_NAME"
