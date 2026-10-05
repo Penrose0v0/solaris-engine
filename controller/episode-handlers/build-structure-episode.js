@@ -3,16 +3,50 @@ const { Vec3 } = require("vec3");
 
 const { buildPhase, rotateLocalToWorld, splitWorkByXAxis } = require("../primitives/building");
 const { ensureBotHasEnough, unequipHand } = require("../primitives/items");
-const { initializePathfinder, sleep, stopPathfinder } = require("../primitives/movement");
-const { pickRandom } = require("../utils/coordination");
+const {
+  gotoWithTimeout,
+  initializePathfinder,
+  land_pos,
+  sleep,
+  stopPathfinder,
+} = require("../primitives/movement");
+const { GoalNearXZ } = require("../utils/bot-factory");
 const { BaseEpisode } = require("./base-episode");
 
 // Constants for building behavior
 const ALL_STRUCTURE_TYPES = ["wall", "tower", "platform"];
+// Structure selection weights (must sum to 1). Skewed toward platform: it
+// yields the most camera translation (bigger footprint, collaborative build),
+// while sparse structures (wall) tend to fail downstream motion checks.
+const STRUCTURE_TYPE_WEIGHTS = { platform: 0.4, tower: 0.2, wall: 0.4 };
 const INITIAL_EYE_CONTACT_MS = 1500; // Initial look duration
 const BUILD_BLOCK_TYPES = ["stone", "cobblestone", "oak_planks", "bricks"];
 const BLOCK_PLACE_DELAY_MS = 300; // Delay between placing blocks
 const ORIENTATION = 0; // Only 0° supported for now
+
+// Camera-motion interleaving: after every few placed blocks the bot walks an
+// arc around the structure-in-progress before continuing. The build itself
+// (what/where/how many blocks) is unchanged; this only adds translation
+// around it so the recording isn't a stationary camera.
+const ARC_WALK_BLOCKS_PER_LEG = [2]; // blocks placed between arc walks
+const ARC_WALK_SMALL_STRUCTURE_BLOCKS = 3; // structures this small walk after every block
+// Each leg is several 90° hops so the pathfinder actually circles the
+// structure instead of cutting straight through/past it. 3 hops = 270°: a
+// real lap's worth of translation, ending on a different side.
+const ARC_WALK_HOP_RAD = Math.PI / 2;
+const ARC_WALK_HOPS_PER_LEG = 3;
+const ARC_WALK_MIN_RADIUS = 4.0; // blocks from structure centre
+const ARC_WALK_RADIUS_MARGIN = 2.5; // beyond the structure's half-extent
+const ARC_WALK_HOP_TIMEOUT_MS = 4000; // give up on a hop rather than stall
+// After finishing its own blocks a bot waits for the partner (the stop phase
+// is triggered by whichever bot finishes last). Keep circling meanwhile
+// instead of standing still; hard cap so it can never outlive the episode.
+const WAIT_FOR_PARTNER_MAX_MS = 120000;
+// Small structures (tower) finish in ~15s, which is too few frames for
+// downstream (needs >= ~800 frames @20fps). After building, keep circling
+// until the build phase has run at least this long before handing off to the
+// stop phase. Recording only; the build itself is unchanged.
+const SMALL_STRUCTURE_MIN_PHASE_MS = 42000;
 
 /**
  * Generate blueprint for a wall structure (5 blocks wide × 2 blocks tall)
@@ -160,6 +194,106 @@ function makePlatformBlueprint(options = {}) {
 }
 
 /**
+ * Pick a structure type using STRUCTURE_TYPE_WEIGHTS with a single shared-RNG
+ * draw (so both bots agree). Types are iterated in sorted order for
+ * determinism; falls back to the last type on floating-point rounding.
+ * @param {Function} sharedBotRng - Shared random number generator
+ * @returns {string} One of ALL_STRUCTURE_TYPES
+ */
+function pickWeightedStructureType(sharedBotRng) {
+  const types = ALL_STRUCTURE_TYPES.slice().sort();
+  const r = sharedBotRng();
+  let acc = 0;
+  for (const t of types) {
+    acc += STRUCTURE_TYPE_WEIGHTS[t] ?? 0;
+    if (r < acc) return t;
+  }
+  return types[types.length - 1];
+}
+
+/**
+ * Walk an arc around the structure so the camera translates between build
+ * chunks. Target = point on a circle around the structure's XZ centre, at the
+ * bot's current angle + ARC_WALK_ANGLE_RAD (so successive legs keep circling
+ * in the same direction). Best-effort: a timeout or pathing failure just
+ * returns and building resumes.
+ * @param {*} bot - Mineflayer bot instance
+ * @param {Vec3} center - Structure XZ centre (y is a fallback ground level)
+ * @param {number} radius - Arc radius in blocks
+ * @param {number} legIndex - Which leg this is (for logging)
+ */
+async function walkArcAroundStructure(
+  bot,
+  center,
+  radius,
+  legIndex,
+  shouldStop = () => false,
+) {
+  const start = Date.now();
+  let angle = Math.atan2(
+    bot.entity.position.z - center.z,
+    bot.entity.position.x - center.x,
+  );
+  console.log(
+    `[${bot.username}] 🚶 Arc leg ${legIndex}: ${ARC_WALK_HOPS_PER_LEG} x ${((ARC_WALK_HOP_RAD * 180) / Math.PI).toFixed(0)}° around structure [r=${radius.toFixed(1)}]`,
+  );
+
+  for (let h = 0; h < ARC_WALK_HOPS_PER_LEG; h++) {
+    if (shouldStop()) break;
+    angle += ARC_WALK_HOP_RAD;
+    const tx = center.x + radius * Math.cos(angle);
+    const tz = center.z + radius * Math.sin(angle);
+    const ground = land_pos(bot, tx, tz);
+    const ty = ground ? ground.y : center.y;
+
+    // Race the hop against the stop signal so a stop phase (or partner
+    // finishing) interrupts within ~100ms rather than after the hop.
+    let stopped = false;
+    const stopWatch = (async () => {
+      while (!stopped && !shouldStop()) await sleep(100);
+      if (!stopped && bot.pathfinder) bot.pathfinder.setGoal(null);
+    })();
+    try {
+      await gotoWithTimeout(bot, new GoalNearXZ(tx, tz, 1.0), {
+        timeoutMs: ARC_WALK_HOP_TIMEOUT_MS,
+      });
+    } catch (err) {
+      console.log(
+        `[${bot.username}] ⚠️ Arc leg ${legIndex} hop ${h + 1} to (${tx.toFixed(1)}, ${ty.toFixed(1)}, ${tz.toFixed(1)}) cut short: ${err.message}`,
+      );
+    } finally {
+      stopped = true;
+      await stopWatch;
+    }
+  }
+  console.log(
+    `[${bot.username}] ✅ Arc leg ${legIndex} done in ${((Date.now() - start) / 1000).toFixed(1)}s`,
+  );
+}
+
+/**
+ * Split an ordered target list into consecutive chunks whose sizes alternate
+ * through ARC_WALK_BLOCKS_PER_LEG (e.g. 3,2,3,2,...).
+ * @param {Array<Object>} targets - Targets already sorted in placement order
+ * @returns {Array<Array<Object>>}
+ */
+function chunkTargetsForArcWalks(targets) {
+  const chunks = [];
+  const small = targets.length <= ARC_WALK_SMALL_STRUCTURE_BLOCKS;
+  let i = 0;
+  let k = 0;
+  while (i < targets.length) {
+    const size = small
+      ? 1
+      : ARC_WALK_BLOCKS_PER_LEG[k % ARC_WALK_BLOCKS_PER_LEG.length];
+    chunks.push(targets.slice(i, i + size));
+    i += size;
+    k++;
+  }
+  return chunks;
+}
+
+/**
  * Get the phase function for building episodes
  * @param {*} bot - Mineflayer bot instance
  * @param {Object} rcon - RCON connection
@@ -186,6 +320,7 @@ function getOnBuildPhaseFn(
   phaseDataOur,
 ) {
   return async function onBuildPhase(phaseDataOther) {
+    const phaseStartTime = Date.now();
     coordinator.sendToOtherBot(
       `buildPhase_${iterationID}`,
       phaseDataOur,
@@ -342,16 +477,81 @@ function getOnBuildPhaseFn(
       allowEntityDetection: true,
     });
 
-    // STEP 7: Build the structure
+    // STEP 7: Build the structure, walking an arc around it between chunks
+    // of 2-3 blocks so the camera keeps translating (see ARC_WALK_* above).
     console.log(`[${bot.username}] 🏗️ STEP 7: Building structure...`);
 
-    let buildResult;
+    // Structure XZ centre + radius for the arc walks, from the full blueprint
+    // so both bots circle the same thing on collaborative builds.
+    const xs = worldTargets.map((t) => t.worldPos.x);
+    const zs = worldTargets.map((t) => t.worldPos.z);
+    const structureCenter = new Vec3(
+      (Math.min(...xs) + Math.max(...xs)) / 2 + 0.5,
+      worldOrigin.y,
+      (Math.min(...zs) + Math.max(...zs)) / 2 + 0.5,
+    );
+    const halfExtent =
+      Math.max(
+        Math.max(...xs) - Math.min(...xs),
+        Math.max(...zs) - Math.min(...zs),
+      ) /
+        2 +
+      0.5;
+    const arcRadius = Math.max(
+      ARC_WALK_MIN_RADIUS,
+      halfExtent + ARC_WALK_RADIUS_MARGIN,
+    );
+
+    // buildPhase sorts by placementOrder internally; sort here too so the
+    // chunks follow the same order it would have used.
+    const orderedTargets = myTargets
+      .slice()
+      .sort((a, b) => (a.placementOrder ?? 0) - (b.placementOrder ?? 0));
+    const chunks = chunkTargetsForArcWalks(orderedTargets);
+    console.log(
+      `[${bot.username}] 🔁 ${orderedTargets.length} blocks in ${chunks.length} chunk(s), arc radius ${arcRadius.toFixed(1)}`,
+    );
+
+    let buildResult = { success: 0, failed: 0, aborted: false };
     try {
-      buildResult = await buildPhase(bot, myTargets, {
-        args: args,
-        delayMs: BLOCK_PLACE_DELAY_MS,
-        shouldAbort: () => bot._episodeStopping,
-      });
+      for (let c = 0; c < chunks.length; c++) {
+        if (bot._episodeStopping) {
+          buildResult.aborted = true;
+          break;
+        }
+
+        // Walk an arc before every chunk except the first (the bot is
+        // already at the build site when the phase starts) — except for
+        // small structures (tower), whose episodes are so short that the
+        // fixed setup head would otherwise dominate; give those a lap first.
+        const smallStructure =
+          orderedTargets.length <= ARC_WALK_SMALL_STRUCTURE_BLOCKS;
+        if (c > 0 || smallStructure) {
+          await walkArcAroundStructure(
+            bot,
+            structureCenter,
+            arcRadius,
+            c,
+            () => bot._episodeStopping,
+          );
+          if (bot._episodeStopping) {
+            buildResult.aborted = true;
+            break;
+          }
+        }
+
+        const chunkResult = await buildPhase(bot, chunks[c], {
+          args: args,
+          delayMs: BLOCK_PLACE_DELAY_MS,
+          shouldAbort: () => bot._episodeStopping,
+        });
+        buildResult.success += chunkResult.success;
+        buildResult.failed += chunkResult.failed;
+        if (chunkResult.aborted) {
+          buildResult.aborted = true;
+          break;
+        }
+      }
 
       if (buildResult.aborted) {
         console.log(`[${bot.username}] 🛑 Build aborted due to stop request`);
@@ -412,26 +612,81 @@ function getOnBuildPhaseFn(
 
     console.log(`[${bot.username}] ✅ BUILD phase complete!`);
 
+    // Small structures: pad the recording by circling until the phase has
+    // lasted SMALL_STRUCTURE_MIN_PHASE_MS, *before* signalling stop.
+    if (orderedTargets.length <= ARC_WALK_SMALL_STRUCTURE_BLOCKS) {
+      const minPhaseReached = () =>
+        Date.now() - phaseStartTime >= SMALL_STRUCTURE_MIN_PHASE_MS;
+      let padLeg = 0;
+      while (!minPhaseReached() && !bot._episodeStopping) {
+        padLeg++;
+        console.log(
+          `[${bot.username}] ⏱️ Small structure: padding recording, circling (leg ${padLeg}, ` +
+            `${((Date.now() - phaseStartTime) / 1000).toFixed(0)}s / ${SMALL_STRUCTURE_MIN_PHASE_MS / 1000}s)`,
+        );
+        await walkArcAroundStructure(
+          bot,
+          structureCenter,
+          arcRadius,
+          chunks.length + padLeg,
+          () => bot._episodeStopping || minPhaseReached(),
+        );
+      }
+      stopPathfinder(bot);
+    }
+
     // Transition to stop phase
-    coordinator.onceEvent(
-      "stopPhase",
+    // The stop phase fires when the *last* bot finishes (the coordinator drops
+    // events that arrive before a listener exists, so the first finisher's
+    // stopPhase is only answered once the partner is done and re-broadcasts).
+    // Wrap the handler to learn when that happens, and keep circling the
+    // structure meanwhile instead of standing still.
+    let partnerDone = false;
+    const onStopPhase = episodeInstance.getOnStopPhaseFn(
+      bot,
+      rcon,
+      sharedBotRng,
+      coordinator,
+      args.other_bot_name,
       episodeNum,
-      episodeInstance.getOnStopPhaseFn(
-        bot,
-        rcon,
-        sharedBotRng,
-        coordinator,
-        args.other_bot_name,
-        episodeNum,
-        args,
-      ),
+      args,
     );
+    coordinator.onceEvent("stopPhase", episodeNum, async (...eventArgs) => {
+      partnerDone = true;
+      return onStopPhase(...eventArgs);
+    });
     coordinator.sendToOtherBot(
       "stopPhase",
       phaseDataOur,
       episodeNum,
       `buildPhase_${iterationID} end`,
     );
+
+    const waitStart = Date.now();
+    const shouldStopWaiting = () =>
+      partnerDone ||
+      bot._episodeStopping ||
+      Date.now() - waitStart > WAIT_FOR_PARTNER_MAX_MS;
+    let waitLeg = 0;
+    while (!shouldStopWaiting()) {
+      waitLeg++;
+      console.log(
+        `[${bot.username}] ⏳ Waiting for partner; circling structure (leg ${waitLeg})`,
+      );
+      await walkArcAroundStructure(
+        bot,
+        structureCenter,
+        arcRadius,
+        chunks.length + waitLeg,
+        shouldStopWaiting,
+      );
+    }
+    stopPathfinder(bot);
+    if (waitLeg > 0) {
+      console.log(
+        `[${bot.username}] ✅ Partner finished after ${((Date.now() - waitStart) / 1000).toFixed(1)}s of circling (${waitLeg} leg(s))`,
+      );
+    }
 
     return buildResult;
   };
@@ -449,7 +704,10 @@ class BuildStructureEpisode extends BaseEpisode {
 
   constructor(sharedBotRng) {
     super();
-    this.structureType = pickRandom(ALL_STRUCTURE_TYPES, sharedBotRng);
+    this.structureType = pickWeightedStructureType(sharedBotRng);
+    // Surfaces as a top-level `structure_type` field in *_episode_info.json
+    // so downstream can split buildStructure episodes by structure.
+    this._episodeMetadata = { structure_type: this.structureType };
   }
 
   async setupEpisode(
