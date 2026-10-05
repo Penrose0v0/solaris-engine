@@ -28,9 +28,28 @@ BASE_DATA_COLLECTION_DIR=$BASE_DATA_DIR/data_collection/eval
 # Set time to "day" at beginning of all eval episodes
 EVAL_TIME_SET_DAY=${EVAL_TIME_SET_DAY:-1}
 
+# Env overrides (defaults reproduce the historical flatland eval config).
+# The traj*Eval handlers index their parameter grid by episode number, so
+# NUM_EPISODES must be >= the grid size to cover every combination once:
+#   trajYawSweepEval / trajPitchSweepEval: 8 angles x 3 speeds = 24
+#   trajForwardEval:                       3 distances x 2 sprint = 6
+#   trajOrbitEval:                         4 arcs x 2 speeds = 8
+DEFAULT_NUM_FLATLAND_WORLD=${NUM_FLATLAND_WORLD:-2}
+DEFAULT_NUM_NORMAL_WORLD=${NUM_NORMAL_WORLD:-0}
+DEFAULT_NUM_EPISODES=${NUM_EPISODES:-16}
+GPU_COUNT=${GPU_COUNT:-1}
+# If set, each type is additionally flattened into
+#   $SHARE_DEST/<type>/{videos,trajectories,episode_info,first_frames}
+# (same layout as the solaris-trial / solaris-prod datasets).
+SHARE_DEST=${SHARE_DEST:-}
+
 # List of eval episode types to run
 # structureNoPlaceEval is used for debugging, but not part of the eval dataset
 EVAL_TYPES=("trajStaticEval" "trajYawSweepEval" "trajPitchSweepEval" "trajForwardEval" "trajOrbitEval")
+# EVAL_TYPES="a b c" env override, e.g. to resume a partial run.
+if [ -n "${EVAL_TYPES_OVERRIDE:-}" ]; then
+    read -r -a EVAL_TYPES <<< "$EVAL_TYPES_OVERRIDE"
+fi
 
 for BATCH_NAME in "${EVAL_TYPES[@]}"; do
     echo "=========================================="
@@ -40,9 +59,9 @@ for BATCH_NAME in "${EVAL_TYPES[@]}"; do
     BATCH_DIR="$BASE_DATA_COLLECTION_DIR/$BATCH_NAME"
 
     # Set default config values
-    NUM_FLATLAND_WORLD=2
-    NUM_NORMAL_WORLD=0
-    NUM_EPISODES=16
+    NUM_FLATLAND_WORLD=$DEFAULT_NUM_FLATLAND_WORLD
+    NUM_NORMAL_WORLD=$DEFAULT_NUM_NORMAL_WORLD
+    NUM_EPISODES=$DEFAULT_NUM_EPISODES
 
     # Override config for turnToLookEval and turnToLookOppositeEval: use 1 normal worldinstance with fixed seed
     if [ "$BATCH_NAME" == "turnToLookEval" ] || [ "$BATCH_NAME" == "turnToLookOppositeEval" ]; then
@@ -72,6 +91,7 @@ for BATCH_NAME in "${EVAL_TYPES[@]}"; do
         --episode_types $BATCH_NAME \
         --viewer_rendering_disabled 1 \
         --gpu_mode egl \
+        --gpu_count $GPU_COUNT \
         --eval_time_set_day $EVAL_TIME_SET_DAY #\
         #--flatland_world_disable_structures 1  # This is manually enabled for only structureEval to avoid confusing background structures 
 
@@ -82,6 +102,11 @@ for BATCH_NAME in "${EVAL_TYPES[@]}"; do
     # Fix Docker root-owned file permissions so re-runs and postprocessing work
     docker run --rm -v "$(pwd)/$BATCH_DIR:/workspace" alpine chown -R "$(id -u):$(id -g)" /workspace
     PATH=$HOME/.local/bin:$PATH .venv-postprocess/bin/python orchestrate.py postprocess --compose-dir "$COMPOSE_DIR" --workers 32 --output-dir "$BATCH_DIR/aligned"
+
+    if [ -n "$SHARE_DEST" ]; then
+        .venv-postprocess/bin/python postprocess/flatten_overhead_dataset.py \
+            --source-dir "$BATCH_DIR" --destination-dir "$SHARE_DEST/$BATCH_NAME" --batch-name "$BATCH_NAME"
+    fi
 
     echo ""
     echo "Completed eval: $BATCH_NAME"
