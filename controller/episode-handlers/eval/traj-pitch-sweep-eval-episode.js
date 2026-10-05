@@ -1,4 +1,4 @@
-const { sneak, lookSmooth } = require("../../primitives/movement");
+const { sneak } = require("../../primitives/movement");
 const { BaseEpisode } = require("../base-episode");
 
 // mineflayer physics ceiling; see prismarine-physics constants.
@@ -11,6 +11,10 @@ const EPISODE_MIN_TICKS = 300;
 // MC clamps pitch to [-90, 90] degrees. Keep a small margin so the requested
 // sweep magnitude equals the achieved magnitude (no silent clipping at the pole).
 const PITCH_LIMIT_RAD = (89 * Math.PI) / 180;
+
+// Stationary pause (ticks) between the pitch normalization and the sweep so
+// the two motions are separable in the recording.
+const PITCH_SETTLE_PAUSE_TICKS = 10;
 
 // Parameter grid. episodeNum indexes into (sweepDegrees x omega) row-major.
 // Signed sweeps so we cover both directions per magnitude. Max magnitude 60
@@ -40,6 +44,27 @@ function pickTrajectoryParams(episodeNum) {
     omega = MAX_CAMERA_SPEED_DEGREES_PER_SEC;
   }
   return { sweepDegrees, omega };
+}
+
+// Rotate pitch to targetPitch at a fixed angular rate by forcing the look one
+// tick at a time. bot.look()'s smooth mode cannot be used for pitch-only
+// moves: the patched mineflayer declares the look task complete as soon as
+// the *yaw* error is ~0, which for a pitch-only move is the first tick, and
+// at that point it clears the speed override, so the rest of the rotation
+// runs at the physics cap (~172 deg/s) regardless of the requested speed and
+// the returned promise resolves long before the camera has stopped moving.
+async function stepPitchTo(bot, yaw, targetPitch, omegaDegPerSec) {
+  const stepRad = (omegaDegPerSec * Math.PI) / 180 / 20;
+  let current = bot.entity.pitch;
+  while (Math.abs(targetPitch - current) > 1e-6) {
+    const remaining = targetPitch - current;
+    current +=
+      Math.abs(remaining) <= stepRad
+        ? remaining
+        : Math.sign(remaining) * stepRad;
+    await bot.look(yaw, current, true);
+    await bot.waitForTicks(1);
+  }
 }
 
 function clampPitch(pitch) {
@@ -93,18 +118,13 @@ function getOnPitchSweepPhaseFn(
       // Normalize to horizon before sweeping so achieved magnitude matches
       // sweep_degrees exactly (no silent clip at MC's ±90 deg pitch cap).
       const originalYaw = bot.entity.yaw;
-      await lookSmooth(bot, originalYaw, 0, MAX_CAMERA_SPEED_DEGREES_PER_SEC, {
-        randomized: false,
-        useEasing: false,
-      });
+      await stepPitchTo(bot, originalYaw, 0, MAX_CAMERA_SPEED_DEGREES_PER_SEC);
+      await bot.waitForTicks(PITCH_SETTLE_PAUSE_TICKS);
 
       const startTick = bot.time.age;
       const targetPitch = clampPitch((sweepDegrees * Math.PI) / 180);
 
-      await lookSmooth(bot, originalYaw, targetPitch, omega, {
-        randomized: false,
-        useEasing: false,
-      });
+      await stepPitchTo(bot, originalYaw, targetPitch, omega);
 
       const endTick = bot.time.age;
       const remainingTicks = EPISODE_MIN_TICKS - (endTick - startTick);

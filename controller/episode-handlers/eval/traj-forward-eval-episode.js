@@ -1,4 +1,4 @@
-const { sneak, lookSmooth, stopAll } = require("../../primitives/movement");
+const { sneak, stopAll } = require("../../primitives/movement");
 const { BaseEpisode } = require("../base-episode");
 
 // mineflayer physics ceiling; see prismarine-physics constants.
@@ -10,6 +10,10 @@ const EPISODE_MAX_TICKS = 300;
 
 // Poll interval for distance-reached check while driving forward.
 const DRIVE_POLL_TICKS = 2;
+
+// Stationary pause (ticks) between the pitch normalization and the drive so
+// the two motions are separable in the recording.
+const PITCH_SETTLE_PAUSE_TICKS = 10;
 
 // Parameter grid. episodeNum indexes into (distance x sprint) row-major.
 // Distance is in blocks. Sprint doubles effective speed:
@@ -38,6 +42,27 @@ function pickTrajectoryParams(episodeNum) {
   const distanceBlocks = DISTANCE_BLOCKS_GRID[Math.floor(idx / cols)];
   const sprint = SPRINT_GRID[idx % cols];
   return { distanceBlocks, sprint };
+}
+
+// Rotate pitch to targetPitch at a fixed angular rate by forcing the look one
+// tick at a time. bot.look()'s smooth mode cannot be used for pitch-only
+// moves: the patched mineflayer declares the look task complete as soon as
+// the *yaw* error is ~0, which for a pitch-only move is the first tick, and
+// at that point it clears the speed override, so the rest of the rotation
+// runs at the physics cap (~172 deg/s) regardless of the requested speed and
+// the returned promise resolves long before the camera has stopped moving.
+async function stepPitchTo(bot, yaw, targetPitch, omegaDegPerSec) {
+  const stepRad = (omegaDegPerSec * Math.PI) / 180 / 20;
+  let current = bot.entity.pitch;
+  while (Math.abs(targetPitch - current) > 1e-6) {
+    const remaining = targetPitch - current;
+    current +=
+      Math.abs(remaining) <= stepRad
+        ? remaining
+        : Math.sign(remaining) * stepRad;
+    await bot.look(yaw, current, true);
+    await bot.waitForTicks(1);
+  }
 }
 
 function horizontalDistanceSq(a, b) {
@@ -100,10 +125,8 @@ function getOnForwardDrivePhaseFn(
       // Normalize pitch to horizon so the forward vector is horizontal and the
       // resulting motion is pure horizontal translation (no vertical drift).
       const originalYaw = bot.entity.yaw;
-      await lookSmooth(bot, originalYaw, 0, MAX_CAMERA_SPEED_DEGREES_PER_SEC, {
-        randomized: false,
-        useEasing: false,
-      });
+      await stepPitchTo(bot, originalYaw, 0, MAX_CAMERA_SPEED_DEGREES_PER_SEC);
+      await bot.waitForTicks(PITCH_SETTLE_PAUSE_TICKS);
 
       const startPos = bot.entity.position.clone();
       const targetDistSq = distanceBlocks * distanceBlocks;
