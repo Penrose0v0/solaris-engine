@@ -19,3 +19,5 @@ compose_configs/
 docs/build/
 docs/source/_build/
 node_modules/
+.venv-postprocess/
+*.log
