@@ -77,6 +77,9 @@ const {
 const {
   TrajOrbitEvalEpisode,
 } = require("./episode-handlers/eval/traj-orbit-eval-episode");
+const {
+  TrajSegmentsEvalEpisode,
+} = require("./episode-handlers/eval/traj-segments-eval-episode");
 const turnToLookEvalTpPoints = require("./episode-handlers/eval/turn-to-look-eval-episode-tp-points.json");
 
 /**
@@ -112,6 +115,7 @@ const episodeClassMap = {
   trajStaticEval: TrajStaticEvalEpisode,
   trajForwardEval: TrajForwardEvalEpisode,
   trajOrbitEval: TrajOrbitEvalEpisode,
+  trajSegmentsEval: TrajSegmentsEvalEpisode,
 };
 
 /**
@@ -132,6 +136,7 @@ const evalEpisodeClasses = [
   TrajStaticEvalEpisode,
   TrajForwardEvalEpisode,
   TrajOrbitEvalEpisode,
+  TrajSegmentsEvalEpisode,
 ];
 
 /**
@@ -179,6 +184,7 @@ const defaultEpisodeTypes = [
   "trajStaticEval",
   "trajForwardEval",
   "trajOrbitEval",
+  "trajSegmentsEval",
 ];
 
 const isCustomEpisodeTypes =

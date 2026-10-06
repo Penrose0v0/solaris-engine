@@ -27,6 +27,7 @@ const episodeTypicalLengths = {
   trajStaticEval: 15,
   trajForwardEval: 15,
   trajOrbitEval: 15,
+  trajSegmentsEval: 8,
 };
 
 /**

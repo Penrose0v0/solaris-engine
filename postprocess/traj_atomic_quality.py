@@ -16,6 +16,11 @@ whether the episode is a "clean" single-variable motion:
                       yaw/pitch change during the drive
   trajOrbitEval       yaw hits target arc, path length ~ r*theta, no vertical
                       motion
+  trajSegmentsEval    checked per segment (see analyze_segments): a translation
+                      segment moves along the pressed key's direction in the
+                      camera frame with no rotation; a rotation segment hits
+                      the commanded angle and rate with no translation. Both
+                      bots run a script, so both recordings are moving cameras.
 
 In normal (terrain) worlds the translation types can be blocked by trees or
 walk off slopes, which is what the flags are for. The moving-camera recording
@@ -30,12 +35,15 @@ import json
 import math
 from pathlib import Path
 
+from traj_segments import resolve_segment_frames
+
 TYPES = [
     "trajStaticEval",
     "trajYawSweepEval",
     "trajPitchSweepEval",
     "trajForwardEval",
     "trajOrbitEval",
+    "trajSegmentsEval",
 ]
 DEG = 180.0 / math.pi
 CAMERA_EPS_RAD = 2e-4
@@ -81,13 +89,135 @@ def contiguous_runs(idx, max_gap=3):
     return runs
 
 
+MOVE_KEYS = ("forward", "back", "left", "right")
+# Camera-frame axis (forward, right) each movement key should move along.
+KEY_AXIS = {"forward": (1, 0), "back": (-1, 0), "left": (0, -1), "right": (0, 1)}
+
+
+def nominal_walk_blocks(hold_ticks: int) -> float:
+    """Distance covered on level ground by holding one movement key for
+    hold_ticks and then coasting to a stop (vanilla walk physics: per tick
+    v <- 0.546 v + 0.098 while the key is down, v <- 0.546 v after)."""
+    v = dist = 0.0
+    for _ in range(hold_ticks):
+        v = v * 0.546 + 0.098
+        dist += v
+    while v > 0.003:
+        v *= 0.546
+        dist += v
+    return dist
+
+
+def analyze_segment(seg: dict, frames: list) -> dict:
+    """Check one trajSegmentsEval segment against its command. Returns the
+    segment with metrics, clean flag and the list of reasons it is not clean.
+
+    Angles follow the mineflayer convention of the pose stream (yaw 0 = north
+    = -z, growing counter-clockwise; pitch positive = up). Translation is
+    expressed in the camera frame of the segment's first frame: forward,
+    right, up."""
+    out = {k: seg.get(k) for k in ("idx", "action", "commanded", "start_frame", "end_frame")}
+    m, reasons = {}, []
+    out["metrics"], out["reasons"] = m, reasons
+    s, e = seg.get("start_frame"), seg.get("end_frame")
+    if s is None or e is None:
+        reasons.append("segment not recorded")
+        out["clean"] = False
+        return out
+    win = frames[s: e + 1]
+    a, b = win[0], win[-1]
+    m["frames"] = len(win)
+    if not 32 <= len(win) <= 38:
+        reasons.append(f"segment has {len(win)} frames, expected ~35")
+
+    yaw0 = a["yaw"]
+    dx, dz = b["x"] - a["x"], b["z"] - a["z"]
+    m["forward"] = dx * -math.sin(yaw0) + dz * -math.cos(yaw0)
+    m["right"] = dx * math.cos(yaw0) + dz * -math.sin(yaw0)
+    m["up"] = b["y"] - a["y"]
+    m["y_range"] = max(f["y"] for f in win) - min(f["y"] for f in win)
+    yaw_steps = [wrap_deg((win[k + 1]["yaw"] - win[k]["yaw"]) * DEG) for k in range(len(win) - 1)]
+    pitch_steps = [(win[k + 1]["pitch"] - win[k]["pitch"]) * DEG for k in range(len(win) - 1)]
+    m["yaw_delta_deg"] = sum(yaw_steps)
+    m["pitch_delta_deg"] = sum(pitch_steps)
+    m["pitch_start_deg"] = a["pitch"] * DEG
+    m["settle_step"] = horiz(win[-2], b) if len(win) > 1 else 0.0
+
+    if any(f.get("isInWater") for f in win):
+        reasons.append("in water")
+    for key in ("jump", "sprint", "sneak"):
+        if any(f["action"].get(key) for f in win):
+            reasons.append(f"{key} pressed")
+
+    action = seg["action"]
+    cmd = seg["commanded"]
+    if action in MOVE_KEYS:
+        fa, ra = KEY_AXIS[action]
+        along = m["forward"] * fa + m["right"] * ra
+        lateral = m["forward"] * ra - m["right"] * fa
+        nominal = nominal_walk_blocks(cmd["hold_ticks"])
+        m["along"] = along
+        m["lateral"] = lateral
+        m["nominal_blocks"] = nominal
+        m["along_ratio"] = along / nominal
+        held = sum(bool(f["action"].get(action)) for f in win)
+        m["key_frames"] = held
+        others = [k for k in MOVE_KEYS if k != action and any(f["action"].get(k) for f in win)]
+        if others:
+            reasons.append(f"other movement keys pressed: {','.join(others)}")
+        if abs(held - cmd["hold_ticks"]) > 3:
+            reasons.append(f"key held {held} frames, commanded {cmd['hold_ticks']}")
+        if not 0.9 <= m["along_ratio"] <= 1.1:
+            reasons.append(f"moved {along:.2f} blocks along {action}, expected {nominal:.2f}")
+        if abs(lateral) > 0.1:
+            reasons.append(f"sideways drift {lateral:.2f} blocks")
+        if abs(m["up"]) > 0.05 or m["y_range"] > 0.05:
+            reasons.append(f"vertical motion (dy={m['up']:.2f}, range={m['y_range']:.2f})")
+        if max((abs(v) for v in yaw_steps), default=0) > 0.1 or abs(m["yaw_delta_deg"]) > 0.3:
+            reasons.append(f"yaw changed {m['yaw_delta_deg']:.2f} deg")
+        if max((abs(v) for v in pitch_steps), default=0) > 0.1 or abs(m["pitch_delta_deg"]) > 0.3:
+            reasons.append(f"pitch changed {m['pitch_delta_deg']:.2f} deg")
+        if abs(m["pitch_start_deg"]) > 0.5:
+            reasons.append(f"camera not level (pitch {m['pitch_start_deg']:.2f} deg)")
+        if m["settle_step"] > 0.02:
+            reasons.append("still moving at segment end")
+    else:
+        axis = "yaw" if action.startswith("yaw") else "pitch"
+        steps = yaw_steps if axis == "yaw" else pitch_steps
+        other = m["pitch_delta_deg"] if axis == "yaw" else m["yaw_delta_deg"]
+        other_steps = pitch_steps if axis == "yaw" else yaw_steps
+        amp = m[f"{axis}_delta_deg"]
+        m["amplitude_err_deg"] = amp - cmd["degrees"]
+        # Median non-zero per-frame step x 20 fps (robust to the frame
+        # sampler straddling two physics ticks or catching none).
+        moving = sorted(abs(v) for v in steps if abs(v) > CAMERA_EPS_RAD * DEG)
+        m["rotation_frames"] = len(moving)
+        m["omega_measured_deg_per_sec"] = moving[len(moving) // 2] * 20.0 if moving else 0.0
+        m["omega_ratio"] = m["omega_measured_deg_per_sec"] / cmd["omega_deg_per_sec"]
+        m["xz_drift"] = math.hypot(dx, dz)
+        keys = [k for k in MOVE_KEYS if any(f["action"].get(k) for f in win)]
+        if keys:
+            reasons.append(f"movement keys pressed: {','.join(keys)}")
+        if abs(m["amplitude_err_deg"]) > 1.0:
+            reasons.append(f"{axis} turned {amp:.2f} deg, commanded {cmd['degrees']}")
+        if not 0.9 <= m["omega_ratio"] <= 1.1:
+            reasons.append(
+                f"{axis} rate {m['omega_measured_deg_per_sec']:.1f} deg/s, commanded {cmd['omega_deg_per_sec']}")
+        if max((abs(v) for v in other_steps), default=0) > 0.1 or abs(other) > 0.3:
+            reasons.append(f"{'pitch' if axis == 'yaw' else 'yaw'} changed {other:.2f} deg")
+        if m["xz_drift"] > 0.05 or abs(m["up"]) > 0.05:
+            reasons.append(f"translated (xz={m['xz_drift']:.2f}, dy={m['up']:.2f})")
+    out["clean"] = not reasons
+    return out
+
+
 def analyze(etype: str, info: dict, frames: list) -> dict:
     rec = {
         "type": etype,
         "episode": None,
         "bot": info["bot_name"],
         "world_type": info.get("world_type"),
-        "moving_camera": etype == "trajStaticEval" or info.get("sweep_bot") == info["bot_name"],
+        "moving_camera": etype in ("trajStaticEval", "trajSegmentsEval") or info.get("sweep_bot") == info["bot_name"],
         "params": {k: v for k, v in info.get("eval_metadata", {}).items() if k != "bots_chosen"},
         "num_frames": len(frames),
         "metrics": {},
@@ -95,6 +225,16 @@ def analyze(etype: str, info: dict, frames: list) -> dict:
     }
     m = rec["metrics"]
     first, last = frames[0], frames[-1]
+
+    if etype == "trajSegmentsEval":
+        if any("start_frame" not in seg for seg in info.get("segments", [])):
+            resolve_segment_frames(info, frames)
+        rec["scene_check_passed"] = info.get("scene_check_passed")
+        rec["segments"] = [analyze_segment(seg, frames) for seg in info.get("segments", [])]
+        m["segments_clean"] = sum(s["clean"] for s in rec["segments"])
+        m["segments_total"] = len(rec["segments"])
+        rec["clean"] = bool(rec["segments"]) and m["segments_clean"] == m["segments_total"]
+        return rec
 
     if etype == "trajStaticEval":
         m["xz_drift"] = horiz(first, last)
@@ -294,6 +434,24 @@ def main() -> int:
             combos[key][1] += r["clean"]
         per = sorted(c[1] for c in combos.values())
         print(f"{etype:20s} {len(rs):10d} {len(mv):7d} {len(clean):13d}  combos={len(combos)} clean/combo min={per[0]} med={per[len(per)//2]} max={per[-1]}")
+
+    seg_recs = [r for r in records if r["type"] == "trajSegmentsEval"]
+    if seg_recs:
+        segs = [s for r in seg_recs for s in r["segments"]]
+        n_clean = sum(r["clean"] for r in seg_recs)
+        print(f"\ntrajSegmentsEval per segment: recordings with all segments clean {n_clean}/{len(seg_recs)}, "
+              f"segments clean {sum(s['clean'] for s in segs)}/{len(segs)}")
+        for action in list(MOVE_KEYS) + ["yaw+", "yaw-", "pitch+", "pitch-"]:
+            sub = [s for s in segs if s["action"] == action]
+            print(f"  {action:8s} clean {sum(s['clean'] for s in sub):3d}/{len(sub):3d}")
+        why = {}
+        for s in segs:
+            for reason in s["reasons"]:
+                # Group by the reason's wording without its numbers.
+                key = " ".join(w for w in reason.split() if not any(c.isdigit() for c in w))
+                why[key] = why.get(key, 0) + 1
+        for key, n in sorted(why.items(), key=lambda kv: -kv[1]):
+            print(f"  not clean: {n:3d} x {key}")
     return 0
 
 
