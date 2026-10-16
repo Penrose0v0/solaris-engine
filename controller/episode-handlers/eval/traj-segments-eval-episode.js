@@ -651,4 +651,17 @@ class TrajSegmentsEvalEpisode extends BaseEpisode {
   }
 }
 
-module.exports = { TrajSegmentsEvalEpisode };
+// Scene-selection helpers shared with worldModEval.
+const sceneUtils = {
+  blockAtXYZ,
+  isAir,
+  isPassable,
+  isFlatGround,
+  isStandable,
+  isOpenColumn,
+  rayHitDistance,
+  isViewGood,
+  EYE_HEIGHT,
+};
+
+module.exports = { TrajSegmentsEvalEpisode, sceneUtils };

@@ -36,7 +36,7 @@ from pathlib import Path
 
 import cv2
 
-from traj_segments import resolve_segment_frames
+from traj_segments import resolve_event_frames, resolve_segment_frames
 
 TIMESTAMP_PREFIX_RE = re.compile(r"^\d{8}_\d{6}_")
 
@@ -150,8 +150,11 @@ def main() -> int:
         shutil.copy2(side_video, videos_dir / f"{base}.mp4")
         shutil.copy2(actions_json, trajectories_dir / f"{base}.json")
         info = json.loads(info_json.read_text())
-        if resolve_segment_frames(info, json.loads(actions_json.read_text())):
-            # trajSegmentsEval: add per-segment start_frame/end_frame
+        frames_json = json.loads(actions_json.read_text())
+        resolved = resolve_segment_frames(info, frames_json)  # trajSegmentsEval
+        resolved = resolve_event_frames(info, frames_json) or resolved  # worldModEval
+        if resolved:
+            # add per-segment start_frame/end_frame or per-event frame_start/frame_end
             (info_dir / f"{base}_episode_info.json").write_text(json.dumps(info, indent=2))
         else:
             shutil.copy2(info_json, info_dir / f"{base}_episode_info.json")
