@@ -98,7 +98,7 @@ const SCENE_HOP_MAX_RANGE = 320;
 const SCENE_HOP_SETTLE_MS = 4000;
 const SPOT_CLEAR_RADIUS = 1;
 const MAX_ACTOR_CANDIDATES = 16;
-const MAX_OBSERVER_CANDIDATES = 16;
+const MAX_OBSERVER_CANDIDATES = 24;
 const OBSERVER_CHUNK_SETTLE_MS = 2500;
 
 const DEG = Math.PI / 180;
@@ -404,9 +404,14 @@ async function pickScene(bot, eventTypes, rng, angleBand) {
           rejected.actor_los++;
           continue;
         }
-        for (const b of shuffled(observerSpots, rng).slice(0, MAX_OBSERVER_CANDIDATES)) {
+        // Observer spots inside the angle band first (the narrow band covers
+        // only ~11% of the ring, so filtering after sampling starves it).
+        const inBand = observerSpots.filter((b) => {
           const dAng = Math.abs(wrapRad(b.ang - a.ang)) / DEG;
-          if (dAng < angleBand[0] || dAng > angleBand[1]) continue;
+          return dAng >= angleBand[0] && dAng <= angleBand[1];
+        });
+        for (const b of shuffled(inBand, rng).slice(0, MAX_OBSERVER_CANDIDATES)) {
+          const dAng = Math.abs(wrapRad(b.ang - a.ang)) / DEG;
           if (Math.hypot(b.pos.x - a.pos.x, b.pos.z - a.pos.z) < MIN_BOT_SEPARATION) continue;
           if (
             events.some(

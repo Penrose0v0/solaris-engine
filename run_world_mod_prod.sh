@@ -24,9 +24,11 @@ EPISODES_PER_INSTANCE=10
 TARGET_CLEAN=90        # clean episodes wanted
 MAX_EPISODES=130       # hard cap on episodes
 GPU_COUNT=2
+FORCE_BUILD=0          # rebuild the images for the first batch of this invocation
 
 while [[ $# -gt 0 ]]; do
   case $1 in
+    --build)                 FORCE_BUILD=1;              shift ;;
     --output-dir)            OUT_ROOT="$2";              shift 2 ;;
     --dataset-dir)           DATASET="$2";               shift 2 ;;
     --instances)             INSTANCES="$2";             shift 2 ;;
@@ -36,6 +38,7 @@ while [[ $# -gt 0 ]]; do
     --gpu-count)             GPU_COUNT="$2";             shift 2 ;;
     -h|--help)
       echo "Usage: $0 [OPTIONS]"
+      echo "  --build                      rebuild the images before the first batch of this run (always done for batch 0)"
       echo "  --output-dir DIR             raw batches (default: $OUT_ROOT)"
       echo "  --dataset-dir DIR            flattened dataset (default: $DATASET)"
       echo "  --instances N                worlds per batch (default: $INSTANCES)"
@@ -116,7 +119,8 @@ while :; do
       --gpu_count "$GPU_COUNT" \
       --eval_time_set_day 1 || { echo "generate_compose failed"; exit 1; }
 
-  BUILD=""; [[ $batch -eq 0 ]] && BUILD="--build"
+  BUILD=""; [[ $batch -eq 0 || $FORCE_BUILD -eq 1 ]] && BUILD="--build"
+  FORCE_BUILD=0
   python3 orchestrate.py start $BUILD --compose-dir "$COMPOSE_DIR" --logs-dir "$BATCH_DIR/logs"
   python3 orchestrate.py stop --compose-dir "$COMPOSE_DIR"
   docker run --rm -v "$(pwd)/$BATCH_DIR:/workspace" alpine chown -R "$(id -u):$(id -g)" /workspace
