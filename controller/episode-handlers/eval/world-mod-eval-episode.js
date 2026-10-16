@@ -52,10 +52,9 @@ const TURN_MAX_TICKS = 6;
 const TURN_MIN_OMEGA_DEG_PER_SEC = 60;
 const WINDOW_TARGET_TICKS = 112;
 const EVENT_TIMEOUT_MS = 3000;
-// Haste V on the actor: concrete (hardness 1.8) with a diamond pickaxe then
-// breaks in 4 ticks instead of 7, which keeps 3-event episodes inside the
-// 105-129 frame window.
-const HASTE_AMPLIFIER = 4;
+// Concrete (hardness 1.8) with a plain diamond pickaxe breaks in 7 ticks
+// (no Haste: normal-game digging). To keep 3-event episodes inside the
+// 105-129 frame window they hold at most one break; see buildEventTypes.
 
 // Geometry. The target area is a 3x3 patch of flat ground; event cells are
 // the air cells directly above it. Distances are horizontal, to the patch
@@ -68,14 +67,17 @@ const OBSERVER_DIST = [3.0, 6.0];
 const ACTOR_CELL_REACH = [2.2, 5.0];
 const INTERACTION_RANGE = 6.0;
 // Angle between the two lines of sight (A->centre, B->centre). Each episode
-// draws one band with equal probability: the narrow band feeds the
-// two-view-consistency metric (cross-view matching is hard at wide angles),
-// the wide band the state-propagation metric. The angle is recorded per
-// episode as view_angle_deg / view_angle_band.
+// draws one band: the narrow band feeds the two-view-consistency metric
+// (cross-view matching is hard at wide angles), the wide band the
+// state-propagation metric. The wide band is drawn a little more often
+// because part of its events cannot be matched by the evaluator and get
+// excluded from scoring. The angle is recorded per episode as
+// view_angle_deg / view_angle_band.
 const VIEW_ANGLE_BANDS_DEG = [
   [10, 30],
   [30, 90],
 ];
+const WIDE_BAND_PROBABILITY = 0.54;
 const MIN_BOT_SEPARATION = 2.5;
 const MIN_OBSERVER_CELL_DISTANCE = 1.5;
 // A bot's body (0.6 wide, 1.8 tall) must stay this far from the other bot's
@@ -106,13 +108,16 @@ const DEG = Math.PI / 180;
 // ---------------------------------------------------------------------------
 
 /**
- * Event types and blocks for one episode: 2 or 3 events, place and break
- * roughly half each (2 events: one of each; 3 events: 2P+1B or 1P+2B), in a
- * random order, distinct block types.
+ * Event types and blocks for one episode: 2 or 3 events in a random order
+ * with distinct block types. A break costs ~8 ticks (7-tick dig + server
+ * confirmation) against ~2 for a placement, so 3-event episodes are always
+ * 2 places + 1 break, and 2-event episodes are 1+1 or 2 breaks (half each):
+ * place and break then come out equal overall (1.25 each per episode) and
+ * the longest script (3 events, 2 turns) stays inside the frame window.
  */
 function buildEventTypes(rng) {
   const numEvents = rng() < 0.5 ? 2 : 3;
-  const numPlace = numEvents === 2 ? 1 : rng() < 0.5 ? 1 : 2;
+  const numPlace = numEvents === 3 ? 2 : rng() < 0.5 ? 1 : 0;
   const types = [];
   for (let i = 0; i < numEvents; i++) types.push(i < numPlace ? "place" : "break");
   for (let k = types.length - 1; k > 0; k--) {
@@ -899,7 +904,7 @@ class WorldModEvalEpisode extends BaseEpisode {
   async actorSetup(bot, rcon, episodeNum, args, botPosition, seed) {
     const rng = seedrandom(seed);
     const eventTypes = buildEventTypes(rng);
-    const angleBand = VIEW_ANGLE_BANDS_DEG[rng() < 0.5 ? 0 : 1];
+    const angleBand = VIEW_ANGLE_BANDS_DEG[rng() < WIDE_BAND_PROBABILITY ? 1 : 0];
     this._episodeMetadata.view_angle_band = angleBand;
     console.log(
       `[${bot.username}] Episode ${episodeNum}: actor, view angle ${angleBand[0]}-${angleBand[1]} deg, ` +
@@ -975,16 +980,13 @@ class WorldModEvalEpisode extends BaseEpisode {
       }
     }
 
-    // Actor tools: pickaxe, the blocks to place, Haste for quick breaks, a
-    // longer interaction range, and no item drops from the breaks.
+    // Actor tools: pickaxe, the blocks to place, a longer interaction range,
+    // and no item drops from the breaks.
     await rcon.send(`clear ${bot.username}`);
     await rcon.send(`give ${bot.username} minecraft:diamond_pickaxe 1`);
     for (const block of new Set(events.filter((e) => e.type === "place").map((e) => e.block))) {
       await rcon.send(`give ${bot.username} minecraft:${block} 16`);
     }
-    await rcon.send(
-      `effect give ${bot.username} minecraft:haste 999999 ${HASTE_AMPLIFIER} true`,
-    );
     this._episodeMetadata.interaction_range_set = await setInteractionRange(
       bot,
       rcon,
@@ -1029,7 +1031,6 @@ class WorldModEvalEpisode extends BaseEpisode {
       "gamerule doTileDrops true",
       "gamerule doMobLoot true",
       "gamerule doMobSpawning true",
-      `effect clear ${bot.username} minecraft:haste`,
     ]) {
       try {
         await rcon.send(cmd);

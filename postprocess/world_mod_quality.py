@@ -194,6 +194,57 @@ def pixel_change(video: Video, pose: dict, cell, fs: int, fe: int):
             "lag_frames": (change_frame - fs) if change_frame is not None else None}
 
 
+# Hue ranges (OpenCV 0-180) of the chromatic concrete colours, for the
+# silhouette-based FOV check; white/black are skipped.
+CONCRETE_HUE = {
+    "red": [(0, 8), (170, 180)], "orange": [(9, 20)], "yellow": [(22, 36)], "lime": [(38, 55)],
+    "cyan": [(85, 100)], "blue": [(105, 125)], "purple": [(130, 150)], "magenta": [(150, 168)],
+}
+FOV_SCALE_BOOSTED = 0.93  # silhouette/projection size ratio below this = FOV 77 (ratio 0.87)
+
+
+def silhouette_scale(video: Video, pose: dict, cell, block: str, k: int):
+    """Size of the block's rendered silhouette relative to its GT projection
+    (1.0 = camera renders at the nominal FOV, ~0.87 = FOV x1.1). Segments
+    the block's colour around the projected box; None when the block is not
+    cleanly visible (occluded, off-colour terrain, white/black)."""
+    color = block.replace("_concrete", "")
+    if color not in CONCRETE_HUE:
+        return None
+    img = video.frame(k)
+    if img is None:
+        return None
+    corners = [(cell[0] + dx, cell[1] + dy, cell[2] + dz) for dx in (0, 1) for dy in (0, 1) for dz in (0, 1)]
+    pts = [project(pose, c, video.width, video.height) for c in corners]
+    if any(p is None for p in pts):
+        return None
+    x0, x1 = int(min(p[0] for p in pts)), int(max(p[0] for p in pts))
+    y0, y1 = int(min(p[1] for p in pts)), int(max(p[1] for p in pts))
+    if x1 - x0 < 10 or y1 - y0 < 10:
+        return None
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+    mask = np.zeros(h.shape, np.uint8)
+    for lo, hi in CONCRETE_HUE[color]:
+        mask |= ((h >= lo) & (h <= hi)).astype(np.uint8)
+    mask &= ((s > 110) & (v > 45)).astype(np.uint8)
+    pad = 60
+    roi = np.zeros_like(mask)
+    roi[max(0, y0 - pad): y1 + pad, max(0, x0 - pad): x1 + pad] = 1
+    mask &= roi
+    n, _, stats, _ = cv2.connectedComponentsWithStats(mask)
+    if n < 2:
+        return None
+    k_best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    x, y, w, hh, area = stats[k_best]
+    if area < 0.4 * (x1 - x0) * (y1 - y0):
+        return None
+    hs, ws = float(hh) / (y1 - y0), float(w) / (x1 - x0)
+    if abs(hs - ws) > 0.08:
+        return None  # partially hidden or mis-segmented
+    return float((hs + ws) / 2.0)
+
+
 def analyze_recording(info: dict, frames: list, video: Video, events: list) -> dict:
     """Per-bot checks of one recording against the (shared) event list."""
     rec = {"bot": info["bot_name"], "role": info.get("role"), "num_frames": len(frames), "events": []}
@@ -231,9 +282,16 @@ def analyze_recording(info: dict, frames: list, video: Video, events: list) -> d
         if not out["los_clear"]:
             out["reasons"].append("target occluded")
         out["pixel_change"] = pixel_change(video, pose, ev["pos"], fs, fe)
+        # Block visible after a placement / before a break (pre-placed).
+        k_vis = fe + 10 if ev["type"] == "place" else fs - 10
+        if 0 <= k_vis < len(frames):
+            out["fov_scale"] = silhouette_scale(video, frames[k_vis], ev["pos"], ev["block"], k_vis)
         out["clean"] = not out["reasons"]
     w0, w1 = info.get("window_start_frame"), info.get("window_end_frame")
     rec["window_frames"] = (w1 - w0 + 1) if w0 is not None and w1 is not None else None
+    scales = sorted(e["fov_scale"] for e in rec["events"] if e.get("fov_scale") is not None)
+    rec["fov_scale"] = float(scales[len(scales) // 2]) if scales else None
+    rec["fov_boosted"] = bool(rec["fov_scale"] < FOV_SCALE_BOOSTED) if scales else None
     return rec
 
 
@@ -298,6 +356,9 @@ def analyze_episode(actor_info, actor_frames, actor_video, obs_info, obs_frames,
     rec["window_frames"] = wf
     if wf is None or not WINDOW_FRAMES[0] <= wf <= WINDOW_FRAMES[1]:
         rec["reasons"].append(f"window {wf} frames, expected {WINDOW_FRAMES[0]}-{WINDOW_FRAMES[1]}")
+    for side in ("actor_recording", "observer_recording"):
+        if rec[side] and rec[side].get("fov_boosted"):
+            rec["reasons"].append(f"{side.split('_')[0]} camera rendered at boosted FOV (scale {rec[side]['fov_scale']:.2f})")
     for e in rec["events"]:
         e["clean"] = not e["reasons"]
     rec["events_clean"] = sum(e["clean"] for e in rec["events"])
@@ -354,6 +415,14 @@ def main() -> int:
     wf = sorted(r["window_frames"] for r in passed if r["window_frames"] is not None)
     if wf:
         print(f"window frames: min {wf[0]} med {wf[len(wf)//2]} max {wf[-1]}, in {WINDOW_FRAMES}: {sum(WINDOW_FRAMES[0] <= w <= WINDOW_FRAMES[1] for w in wf)}/{len(wf)}")
+    fov = {"nominal": 0, "boosted": 0, "unknown": 0}
+    for r in records:
+        for side in ("actor_recording", "observer_recording"):
+            if r[side] is None:
+                continue
+            b = r[side].get("fov_boosted")
+            fov["unknown" if b is None else "boosted" if b else "nominal"] += 1
+    print(f"camera FOV from block silhouettes: {fov} (recordings)")
     bands = {}
     for r in records:
         key = "-".join(str(b) for b in r["view_angle_band"]) if r.get("view_angle_band") else "unknown"

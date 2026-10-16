@@ -59,6 +59,7 @@ EPISODES_PER_BATCH=$((INSTANCES * EPISODES_PER_INSTANCE))
 
 mkdir -p "$OUT_ROOT" "$DATASET"
 echo "prod started $(date -Is): target_clean=$TARGET_CLEAN max_episodes=$MAX_EPISODES batch=${INSTANCES}x${EPISODES_PER_INSTANCE} dataset=$DATASET"
+[[ -f "$DATASET/README.md" ]] || cp docs/world_mod_dataset_README.md "$DATASET/README.md"
 
 count_clean() {
   [[ -f "$DATASET/quality_manifest_world_mod.json" ]] || { echo 0; return; }
@@ -133,6 +134,29 @@ while :; do
       --source-dir "$BATCH_DIR" --destination-dir "$DATASET/$TYPE" --batch-name "$TYPE"
   $PY_POST postprocess/world_mod_quality.py --root "$DATASET"
   $PY_POST postprocess/camera_fov_check.py --root "$DATASET" --out "$DATASET/camera_fov_check.json" | tail -3
+
+  # Every camera must render at the nominal FOV 70 deg: stop on the first
+  # recording that either check flags as boosted (77 deg).
+  boosted=$(python3 - "$DATASET" <<'PYEOF'
+import json, sys
+root = sys.argv[1]
+bad = set()
+for r in json.load(open(f"{root}/quality_manifest_world_mod.json")):
+    for side in ("actor_recording", "observer_recording"):
+        if r.get(side) and r[side].get("fov_boosted"):
+            bad.add(f"{r['episode']}/{r['instance']}/{r[side]['bot']} (silhouette scale {r[side]['fov_scale']:.2f})")
+for name, v in json.load(open(f"{root}/camera_fov_check.json")).items():
+    if v.get("verdict") == "boosted":
+        bad.add(f"{name} (f_est {v['f_est']:.0f})")
+print("\n".join(sorted(bad)))
+PYEOF
+)
+  if [[ -n "$boosted" ]]; then
+    echo "FOV CHECK FAILED after batch $batch: recordings rendered at FOV 77 deg:"
+    echo "$boosted"
+    echo "stopping production"
+    exit 2
+  fi
 
   episodes_done=$((episodes_done + INSTANCES * per_instance))
   batch=$((batch + 1))
