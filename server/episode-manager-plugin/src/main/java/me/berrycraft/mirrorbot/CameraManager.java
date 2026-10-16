@@ -154,6 +154,8 @@ public class CameraManager implements Listener {
 
                 mirrorInventory(controller, camera);
                 mirrorStatus(controller, camera);
+                // Keep the rendered FOV at the nominal 70 deg (see applyCameraPhysics).
+                if (camera.isFlying()) camera.setFlying(false);
 
                 Location cLoc = controller.getLocation();
                 Location camLoc = camera.getLocation();
@@ -408,8 +410,13 @@ public class CameraManager implements Listener {
     private void applyCameraPhysics(Player cam) {
         cam.setGravity(false);
         cam.setVelocity(new Vector(0, 0, 0));
+        // allowFlight keeps the hovering camera from being kicked for flying;
+        // the camera must NOT actually fly: a flying client renders with its
+        // FOV multiplied by 1.1 (77 deg instead of 70), and the client clears
+        // the flag on its own when it touches ground, so the FOV would differ
+        // from recording to recording.
         cam.setAllowFlight(true);
-        cam.setFlying(true);
+        if (cam.isFlying()) cam.setFlying(false);
     }
 
     private void resetCameraPhysics(Player p) {
