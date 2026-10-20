@@ -241,6 +241,16 @@ def generate_compose_config(
                     'if [ -d /source_skins ] && [ -n "$(ls -A /source_skins 2>/dev/null)" ]; then '
                     "  cp -r /source_skins/. /data/skins/; "
                     "fi; "
+                    # Paper's packet limiter (500 packets/s, KICK) now and then
+                    # kicks a bot or spectator mid-episode, which leaves the
+                    # controller idle and the batch hung. Drop instead of
+                    # kicking, at a higher rate. Paper fills in the rest of the
+                    # file with defaults on first start.
+                    "if [ ! -f /data/config/paper-global.yml ]; then "
+                    "  mkdir -p /data/config && chmod 777 /data/config && "
+                    "  printf 'packet-limiter:\\n  all-packets:\\n    action: DROP\\n    interval: 7.0\\n    max-packet-rate: 2000.0\\n' "
+                    "    > /data/config/paper-global.yml && chmod 666 /data/config/paper-global.yml; "
+                    "fi; "
                     "chmod -R 777 /data/plugins /data/skins",
                 ],
                 "volumes": [

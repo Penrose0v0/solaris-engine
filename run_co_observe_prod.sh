@@ -24,6 +24,7 @@ TARGET_CLEAN=90        # clean episodes wanted
 MAX_EPISODES=160       # hard cap on episodes
 GPU_COUNT=2
 FORCE_BUILD=0          # rebuild the images for the first batch of this invocation
+BATCH_TIMEOUT=3000     # seconds per batch before a hung batch is cut off (2x10 episodes take ~15 min + build)
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -124,7 +125,11 @@ while :; do
 
   BUILD=""; [[ $batch -eq 0 || $FORCE_BUILD -eq 1 ]] && BUILD="--build"
   FORCE_BUILD=0
-  python3 orchestrate.py start $BUILD --compose-dir "$COMPOSE_DIR" --logs-dir "$BATCH_DIR/logs"
+  # A bot that gets disconnected mid-batch (ECONNRESET / "exceeding packet
+  # rate limit") leaves its controller idle and `start` never returns; cap
+  # the batch and keep whatever was recorded.
+  timeout --signal=INT "$BATCH_TIMEOUT" python3 orchestrate.py start $BUILD --compose-dir "$COMPOSE_DIR" --logs-dir "$BATCH_DIR/logs" \
+    || echo "batch $batch: orchestrate start ended with status $? (timeout ${BATCH_TIMEOUT}s or error), continuing with what was recorded"
   python3 orchestrate.py stop --compose-dir "$COMPOSE_DIR"
   docker run --rm -v "$(pwd)/$BATCH_DIR:/workspace" alpine chown -R "$(id -u):$(id -g)" /workspace
 
