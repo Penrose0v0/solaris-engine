@@ -82,6 +82,10 @@ def build_launch_command(version: str, minecraft_dir: Path) -> list[str]:
     ensure_option(minecraft_dir, "skipQuickPlayFirstLaunchPrompt", "true")
     ensure_option(minecraft_dir, "accessibilityOnboarded", "true")
     ensure_option(minecraft_dir, "tutorialStep", "none")
+    # No chat lines in the recordings (join/leave messages of reconnecting
+    # spectators, command feedback); commands still work. Stored as an int
+    # in 1.21 (0 full, 1 system only, 2 hidden).
+    ensure_option(minecraft_dir, "chatVisibility", "2")
 
     options = {
         "username": login["name"],

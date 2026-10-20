@@ -42,6 +42,19 @@ def resolve_event_frames(info: dict, frames: list) -> bool:
     return True
 
 
+def resolve_window_frames(info: dict, frames: list) -> bool:
+    """coObserveEval (and any episode with only a motion window): fill
+    window_start_frame/window_end_frame from window_start_time_ms/
+    window_end_time_ms when they are not set yet. Returns True if it did."""
+    w0, w1 = info.get("window_start_time_ms"), info.get("window_end_time_ms")
+    if w0 is None or w1 is None or "window_start_frame" in info:
+        return False
+    idx = [k for k, f in enumerate(frames) if w0 <= f["renderTime"] < w1]
+    info["window_start_frame"] = idx[0] if idx else None
+    info["window_end_frame"] = idx[-1] if idx else None
+    return True
+
+
 def resolve_segment_frames(info: dict, frames: list) -> bool:
     """Fill start_frame/end_frame of every segment in ``info`` in place.
 

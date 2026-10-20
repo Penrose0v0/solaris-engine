@@ -83,6 +83,9 @@ const {
 const {
   WorldModEvalEpisode,
 } = require("./episode-handlers/eval/world-mod-eval-episode");
+const {
+  CoObserveEvalEpisode,
+} = require("./episode-handlers/eval/co-observe-eval-episode");
 const turnToLookEvalTpPoints = require("./episode-handlers/eval/turn-to-look-eval-episode-tp-points.json");
 
 /**
@@ -120,6 +123,7 @@ const episodeClassMap = {
   trajOrbitEval: TrajOrbitEvalEpisode,
   trajSegmentsEval: TrajSegmentsEvalEpisode,
   worldModEval: WorldModEvalEpisode,
+  coObserveEval: CoObserveEvalEpisode,
 };
 
 /**
@@ -142,6 +146,7 @@ const evalEpisodeClasses = [
   TrajOrbitEvalEpisode,
   TrajSegmentsEvalEpisode,
   WorldModEvalEpisode,
+  CoObserveEvalEpisode,
 ];
 
 /**
@@ -191,6 +196,7 @@ const defaultEpisodeTypes = [
   "trajOrbitEval",
   "trajSegmentsEval",
   "worldModEval",
+  "coObserveEval",
 ];
 
 const isCustomEpisodeTypes =
