@@ -2,12 +2,18 @@
 
 Shared-world-consistency eval episodes. An asymmetric concrete landmark
 stands on a levelled arena; both bots circle-strafe around it at radius
-6-12 blocks, looking at it on every tick, either in the same angular
-direction or in opposite directions (alternating by episode number). The
-initial angle between the two lines of sight is 30-90 deg; it drifts during
-the episode (different radii mean different angular speeds, and in opposite
-mode the bots pass each other), so the per-frame angle is in the quality
-manifest.
+6-12 blocks, looking at it on every tick, in the same angular direction or
+(prod001 only) in opposite directions. The initial angle between the two
+lines of sight is drawn per episode; it drifts during the episode
+(different radii mean different angular speeds, and in opposite mode the
+bots pass each other), so the per-frame angle is in the quality manifest.
+
+Parameters per dataset (everything else identical):
+
+| dataset | direction mode | initial view angle | notes |
+|---|---|---|---|
+| solaris-co-observe-prod001 | same / opposite, alternating by episode number | uniform 30-90 deg | 98 clean of 120 |
+| solaris-co-observe-prod002 | same only | uniform 25-50 deg | the eval side could score almost only same-direction episodes started at 30-50 deg in prod001 (20 of 22; opposite mode and same >= 60 deg nearly unusable) |
 
 **World edits happen only before the recording starts; inside the recorded
 window the world is static.** The primary bot looks for a nearly level

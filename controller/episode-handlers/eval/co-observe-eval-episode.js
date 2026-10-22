@@ -60,8 +60,14 @@ const RADIUS_RANGE = [6, 12];
 const RADIUS_STEP = 0.5;
 const SAME_MAX_DR = 2.0;
 const OPPOSITE_DR = [1.5, 3.0];
-// Initial angle between the two lines of sight to the centre.
-const VIEW_ANGLE_RANGE_DEG = [30, 90];
+// Initial angle between the two lines of sight to the centre, and whether
+// the opposite direction mode is used (episodes alternate same/opposite
+// when it is, else all are same-direction). prod001 was recorded with
+// [30, 90] and both modes; the eval side could score almost only
+// same-direction episodes that started at 30-50 deg, hence prod002's
+// [25, 50] / same only.
+const VIEW_ANGLE_RANGE_DEG = [25, 50];
+const OPPOSITE_MODE_ENABLED = false;
 // Radius controller: strafing alone lets the radius creep outwards, so
 // forward/back is pressed when the predicted radius leaves the dead band.
 const RADIUS_DEADBAND = 0.1;
@@ -178,7 +184,7 @@ function clamp(v, lo, hi) {
  * its initial value and the pass-by comes late.
  */
 function buildPlan(rng, episodeNum) {
-  const mode = episodeNum % 2 === 0 ? "same" : "opposite";
+  const mode = OPPOSITE_MODE_ENABLED && episodeNum % 2 === 1 ? "opposite" : "same";
   const keyA = rng() < 0.5 ? "left" : "right";
   const keyB = mode === "same" ? keyA : keyA === "left" ? "right" : "left";
   const theta0 =
