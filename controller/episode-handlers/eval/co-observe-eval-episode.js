@@ -562,7 +562,7 @@ async function hop(bot, rcon, origin, attempt, rng) {
  * the top block, anything left above the ground level is cleared. Returns
  * the number of columns touched per round.
  */
-async function repairArena(bot, rcon, arena, top) {
+async function repairArena(bot, rcon, arena, top, clearHeight = TERRAFORM_CLEAR_HEIGHT) {
   const { cx, cz, y, half } = arena;
   const rounds = [];
   for (let round = 0; round < ARENA_REPAIR_ROUNDS; round++) {
@@ -581,10 +581,10 @@ async function repairArena(bot, rcon, arena, top) {
           await rcon.send(`setblock ${x} ${y - 1} ${z} minecraft:${top}`);
           ground++;
         }
-        for (let dy = 0; dy < TERRAFORM_CLEAR_HEIGHT; dy++) {
+        for (let dy = 0; dy < clearHeight; dy++) {
           const b = blockAtXYZ(bot, x, y + dy, z);
           if (b !== null && b.name !== "air") {
-            await rcon.send(`fill ${x} ${y} ${z} ${x} ${y + TERRAFORM_CLEAR_HEIGHT - 1} ${z} minecraft:air`);
+            await rcon.send(`fill ${x} ${y} ${z} ${x} ${y + clearHeight - 1} ${z} minecraft:air`);
             above++;
             break;
           }
@@ -618,7 +618,7 @@ async function repairSpot(bot, rcon, pos, arena, top) {
  * then fill the ground layer and the one below where they are open (holes,
  * water, plants, leaves). Returns the commands' results.
  */
-async function terraform(bot, rcon, arena) {
+async function terraform(bot, rcon, arena, clearHeight = TERRAFORM_CLEAR_HEIGHT) {
   const { cx, cz, y, half } = arena;
   const x0 = cx - half;
   const x1 = cx + half;
@@ -628,7 +628,7 @@ async function terraform(bot, rcon, arena) {
   const top = topBlockAt && isFlatGround(topBlockAt) ? topBlockAt.name : "grass_block";
   const filler = DIRT_TOPS.includes(top) ? "dirt" : "stone";
   const cmds = [
-    `fill ${x0} ${y} ${z0} ${x1} ${y + TERRAFORM_CLEAR_HEIGHT - 1} ${z1} minecraft:air`,
+    `fill ${x0} ${y} ${z0} ${x1} ${y + clearHeight - 1} ${z1} minecraft:air`,
     `fill ${x0} ${y - 2} ${z0} ${x1} ${y - 2} ${z1} minecraft:${filler} replace #minecraft:replaceable`,
     `fill ${x0} ${y - 2} ${z0} ${x1} ${y - 2} ${z1} minecraft:${filler} replace #minecraft:leaves`,
     `fill ${x0} ${y - 1} ${z0} ${x1} ${y - 1} ${z1} minecraft:${top} replace #minecraft:replaceable`,
@@ -652,7 +652,7 @@ async function terraform(bot, rcon, arena) {
       results.push(`error: ${err.message}`);
     }
   }
-  return { top_block: top, filler_block: filler, box: [x0, y - 2, z0, x1, y + TERRAFORM_CLEAR_HEIGHT - 1, z1], results };
+  return { top_block: top, filler_block: filler, box: [x0, y - 2, z0, x1, y + clearHeight - 1, z1], results };
 }
 
 // ---------------------------------------------------------------------------
@@ -1181,4 +1181,31 @@ class CoObserveEvalEpisode extends BaseEpisode {
   }
 }
 
-module.exports = { CoObserveEvalEpisode };
+// Scene / arena helpers shared with sharedArenaEval.
+const coObserveUtils = {
+  surfaceMap,
+  rateArena,
+  terraform,
+  repairArena,
+  hop,
+  quietNotificationsOnce,
+  rendezvous,
+  anglesTo,
+  eyeOf,
+  wrapRad,
+  shuffled,
+  BLOCK_TYPES,
+  TERRAIN_STRICT,
+  TERRAIN_RELAXED,
+  RELAXED_FROM_ATTEMPT,
+  SCENE_MAX_ATTEMPTS,
+  SCENE_HOP_SETTLE_MS,
+  SCENE_SEARCH_RADIUS,
+  MAX_UNLOADED_FRACTION,
+  HEIGHT_MAP_RETRIES,
+  HEIGHT_MAP_RETRY_MS,
+  MOB_CLEAR_RADIUS,
+  DEG,
+};
+
+module.exports = { CoObserveEvalEpisode, coObserveUtils };

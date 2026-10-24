@@ -30,6 +30,7 @@ const episodeTypicalLengths = {
   trajSegmentsEval: 8,
   worldModEval: 8,
   coObserveEval: 10,
+  sharedArenaEval: 10,
 };
 
 /**
