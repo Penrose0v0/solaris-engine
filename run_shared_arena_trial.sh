@@ -9,7 +9,8 @@
 #
 # Long run: launch with  setsid nohup ./run_shared_arena_trial.sh > shared_arena_trial.log 2>&1 &
 
-OUT_ROOT="output/shared_arena_trial001"
+OUT_ROOT="output/shared_arena_trial002"
+DATASET=""              # flattened dataset dir (default: <OUT_ROOT>/dataset)
 INSTANCES=2             # parallel normal worlds
 EPISODES_PER_INSTANCE=5 # -> INSTANCES * EPISODES_PER_INSTANCE episodes
 START_ID=0
@@ -18,13 +19,15 @@ GPU_COUNT=2
 while [[ $# -gt 0 ]]; do
   case $1 in
     --output-dir)            OUT_ROOT="$2";              shift 2 ;;
+    --dataset-dir)           DATASET="$2";               shift 2 ;;
     --instances)             INSTANCES="$2";             shift 2 ;;
     --episodes-per-instance) EPISODES_PER_INSTANCE="$2"; shift 2 ;;
     --start-id)              START_ID="$2";              shift 2 ;;
     --gpu-count)             GPU_COUNT="$2";             shift 2 ;;
     -h|--help)
       echo "Usage: $0 [OPTIONS]"
-      echo "  --output-dir DIR             (default: $OUT_ROOT)"
+      echo "  --output-dir DIR             raw batch (default: $OUT_ROOT)"
+      echo "  --dataset-dir DIR            flattened dataset (default: <output-dir>/dataset)"
       echo "  --instances N                worlds (default: $INSTANCES)"
       echo "  --episodes-per-instance N    (default: $EPISODES_PER_INSTANCE)"
       echo "  --start-id N                 first episode id (default: $START_ID)"
@@ -40,12 +43,17 @@ conda activate SolarisEngine
 cd "$(dirname "$0")"
 
 TYPE=sharedArenaEval
-DATASET="$OUT_ROOT/dataset"
+[[ -n "$DATASET" ]] || DATASET="$OUT_ROOT/dataset"
 PY_POST=.venv-postprocess/bin/python
 BATCH_DIR="$OUT_ROOT/batch_0"
 COMPOSE_DIR="$BATCH_DIR/compose_configs"
 
-mkdir -p "$OUT_ROOT"
+mkdir -p "$OUT_ROOT" "$DATASET"
+if [[ ! -f "$DATASET/README.md" ]]; then
+  cp docs/shared_arena_dataset_README.md "$DATASET/README.md"
+  printf '\n## Collection\n\nRecorded with solaris-engine commit %s (branch %s), started %s, by %s.\n' \
+    "$(git rev-parse HEAD)" "$(git rev-parse --abbrev-ref HEAD)" "$(date -Is)" "$(basename "$0")" >> "$DATASET/README.md"
+fi
 echo "trial started $(date -Is): ${INSTANCES}x${EPISODES_PER_INSTANCE} episodes from id $START_ID -> $BATCH_DIR"
 
 docker ps -q --filter "name=docker-compose-" | xargs -r docker rm -f >/dev/null 2>&1

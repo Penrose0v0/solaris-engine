@@ -2,36 +2,68 @@
 
 Shared-world-consistency eval episodes for the reconstruction-based scoring
 (reconstruct one agent's frames in 3D, register the other agent's frames
-into that model, and the other way round). Two bots stand inside a square
-concrete enclosure and sweep their yaw back and forth without moving; every
-wall and floor block has its own random colour, so no stretch of wall
-repeats and the scene is richly textured in every direction.
+into that model, and the other way round). Two bots stand in a textured,
+non-repeating scene and sweep their yaw back and forth without moving.
+
+Version 2 (this README) has two scene types, assigned by
+(instance id + episode number) parity:
+
+- **courtyard**: a square courtyard (15x15 inside) walled with seeded
+  player-style modules, built on a levelled spot before the recording.
+- **village**: a generated village found with `locate structure
+  #minecraft:village`, left untouched; standing spots chosen by ray
+  coverage.
+
+Version 1 (solaris-shared-arena-trial001) used a plain random-colour
+concrete enclosure; its problems (grey-level texture identical across
+enclosures, bots standing one behind the other) are what version 2 fixes.
 
 **World edits happen only before the recording starts; inside the recorded
-window the world is static.** The primary bot finds a nearly level square
-(19x19) in normal-world terrain, hopping to flat biomes when nothing nearby
-qualifies, levels it through rcon (everything above ground level cleared,
-holes filled with the local top block), and builds the enclosure. Block
-drops and mob spawning are off. Each bot is visible in the other's video
-(with its name tag) when it enters the field of view.
+window the world is static.** Random ticks (`randomTickSpeed 0`: no crop
+growth, grass spread or leaf decay), weather, block drops and mob spawning
+are off during the episode. Each bot is visible in the other's video (with
+its name tag) when it enters the field of view.
 
-Enclosure: 15x15 floor inside walls one block thick, 4 or 5 blocks tall
-(per episode), no roof. Wall and floor blocks are random concrete colours,
-never equal to the block to the left or below. The complete block list is in
-episode_info.
+## Common rules
 
-Bots: random cells at least 3.5 blocks from the walls, 4-8 blocks apart.
-Bot A's initial yaw is random; bot B starts looking at the wall point A looks
-at (shifted along the wall by up to 2 blocks, yaw jittered by up to 15 deg),
-so the two start views overlap (same or adjacent wall). Initial pitch
--5..5 deg.
+Bots 4-8 blocks apart, side by side or diagonal: at frame 0 the unit
+baseline between them and each bot's forward direction satisfy
+|baseline . forward| <= 0.7 for both bots (no near-zero-parallax pair for
+the reconstruction's initialisation). Bot A's initial yaw is random (in the
+village: towards a block 3-12 away); bot B starts looking at the same spot
+(shifted / jittered, clear line of sight in the village), so the start views
+overlap. Initial pitch -5..5 deg.
 
-Motion: 10 static ticks, then 160 ticks of yaw sweeping (triangle wave
-around the initial yaw, peak-to-peak 90-270 deg, 30-90 deg/s, both drawn per
-bot), plus a small pitch sine (0-10 deg amplitude, 3-6 s period), then 25
-static ticks. No translation. When the sweep is slow and wide the full
-peak-to-peak range is not reached inside the window; the realised range is
-in the quality manifest.
+Motion: 10 static ticks, 160 ticks of yaw sweeping (triangle wave around the
+initial yaw, peak-to-peak 90-270 deg, 30-90 deg/s, drawn per bot) plus a
+small pitch sine (0-10 deg amplitude, 3-6 s period), then 25 static ticks.
+No translation. Slow and wide sweeps do not reach the full peak-to-peak
+range inside the window; the realised range is in the quality manifest.
+
+## Courtyard
+
+Thirteen wall modules, 3 wide, 4-6 tall, 1-2 thick (outwards), some
+protruding one block into the yard: stone wall with a window niche, timber
+frame, bookshelf wall, door with lanterns, fireplace niche, glazed band,
+eave of slabs, log pillar, mixed brick, arched alcove, log stack, terracotta
+panel, cobble base, buttress. Four material palettes (oak + stone bricks,
+spruce + deepslate, birch + sandstone, cherry + bricks/terracotta), one per
+episode; five modules per side with seeded heights, log corner pillars with
+lanterns, a floor mixing five textured blocks of the palette. No
+transparent, liquid, falling, burning or animated blocks (lanterns only, no
+torches). The levelled square is 21x21.
+
+## Village
+
+The primary bot is spread within 8 blocks of the located village start and
+scans standable columns within 24 blocks (stride 2): a spot qualifies when
+at least 80% of the rays every 15 deg of yaw at 0 / 8 / 16 deg pitch hit a
+full block within 12 blocks. All entities within 64 blocks (villagers, iron
+golems, animals, item frames) are removed before the bots are placed. No
+village block is changed (`world_edits_for_placement` lists any clearing
+done for standing; it is empty in this dataset). Every non-air block within
+16 blocks of either bot (4 below to 16 above the lower bot) is exported to
+episode_info so the scene can be rebuilt.
 
 ## Layout
 
@@ -40,6 +72,7 @@ in the quality manifest.
     sharedArenaEval/episode_info/<same stem>_episode_info.json
     sharedArenaEval/first_frames/<same stem>_first_frame.png
     quality_manifest_shared_arena.json   postprocess/shared_arena_quality.py, one record per episode
+    sift_quick_check.json                same- vs cross-episode SIFT inliers on the first window frames
     shared_arena_review/<ep>_<inst>.png   A | B at the window start, middle and end
 
 ## Camera model and timing
@@ -52,28 +85,39 @@ video can trail the trajectory by a few frames.
 
 ## episode_info fields
 
-- `centre` [x,y,z]: enclosure centre at ground level (feet height).
-- `enclosure`: `inner_size`, `wall_height`, `wall_offset` (8: wall columns
-  at |dx| or |dz| == 8 from the centre column), `box_min`/`box_max`
-  (inclusive block coordinates, floor included), `num_blocks`, `blocks[]`
-  {x, y, z, block, part: wall|floor}.
+- `scene_type`: courtyard | village.
+- `centre` [x,y,z]: courtyard centre at ground level, or the midpoint of
+  the two bots (village).
+- `courtyard` (courtyard only): `palette`, `palette_blocks`, `modules[]`
+  {side, index, module, height}, `max_height`, `box_min`/`box_max`,
+  `num_blocks`, `blocks[]` {x, y, z, block (with block state), module,
+  part: wall|protrusion|floor}.
+- `village` (village only): `located` (locate result), `search` (spots
+  passing / columns checked / landing point), `ray_check` parameters,
+  `export_radius`, `export_y_range`, `blocks[]` as [x, y, z, name,
+  properties?].
 - `bots` {name: {pos, yaw0, pitch0, sweep_deg, omega_deg_per_sec,
-  direction, pitch_amp_deg, pitch_period_s, pitch_phase, wall_hit}}.
-- `start_overlap`: planned `view_angle_deg`, `wall_a`, `wall_b`,
-  `same_or_adjacent_wall`, `bot_distance`.
+  direction, pitch_amp_deg, pitch_period_s, pitch_phase, wall_hit |
+  look_hit, ray_coverage, ray_hits_per_yaw}}.
+- `start_overlap`: planned `view_angle_deg`, `bot_distance`,
+  `baseline_forward_dot` {a, b}, and per scene the walls looked at or the
+  shared target point.
 - own bot: `pos`, `look_plan`, `look_trace[]` per tick {t, time_ms, yaw,
   pitch}, `sweep_stats`, `drift_blocks`.
 - `window_start_time_ms` / `window_end_time_ms` and `window_start_frame` /
-  `window_end_frame`: the sweep window of this recording; `suggested_window`
-  says the same in words.
-- `arena`, `terraform`, `scene_search_attempts`, `scene_hops`.
+  `window_end_frame`: the sweep window of this recording (`suggested_window`
+  says the same in words).
+- `arena`, `terraform` (courtyard), `scene_search_attempts`, `scene_hops`,
+  `world_edits_for_placement`.
 
-## Quality manifest
+## Quality manifest and quick check
 
-One record per episode: `clean`, `reasons`, per recording `pos_drift`,
-`yaw_range_deg`, `yaw_travel_deg`, `yaw_reversals`,
-`omega_measured_deg_per_sec`, pitch range, `overlay` (HUD heuristics,
-informational only: they fire on the white / yellow concrete), per pair
-(`pairs[]`) `view_angle_deg`, `iou` (enclosure face points visible in both
-views / in either), `both`; `start_overlap` (first pair) and `overlap`
-summaries.
+`quality_manifest_shared_arena.json`: per episode `clean`, `reasons`,
+`scene_type`, per recording sweep statistics, `baseline_forward_dot_measured`
+{a, b, distance} at the first window frame, `start_overlap` and `overlap`
+(sample points of the scene inside both frusta / inside either; courtyard:
+inner wall faces and floor tops, village: exported blocks within 12 blocks,
+no occlusion handling), per pair `view_angle_deg`.
+`sift_quick_check.json`: grayscale SIFT (HUD masked) inlier counts after
+RANSAC on the fundamental matrix for the same-episode pair A0/B0 and every
+cross-episode pair A0(i)/B0(j).
