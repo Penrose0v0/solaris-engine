@@ -378,31 +378,62 @@ const RAY_STEP_DEG = 15;
 const RAY_PITCHES_DEG = [0, 8, 16];
 const RAY_MAX_DIST = 12;
 const RAY_MIN_COVERAGE = 0.8;
+// Ray coverage alone prefers caves, overhangs and cliff pockets (trial002
+// run 1). A village spot must also be outdoors (sky light at the eye) and
+// most of what the rays hit must be built material, not terrain.
+const MIN_SKY_LIGHT = 12;
+const MIN_BUILT_FRACTION = 0.4;
+const BUILT_BLOCK_RE =
+  /(planks|cobblestone|stripped_|_door|_fence|_stairs|_slab|bell|hay_block|lantern|torch|dirt_path|smooth_sandstone|cut_sandstone|chiseled_sandstone|terracotta|bricks|glass|campfire|barrel|composter|crafting_table|lectern|smithing_table|loom|cartography_table|fletching_table|furnace|smoker|grindstone|stonecutter|cauldron|_bed|_wool|bookshelf|mossy|_trapdoor|_wall$|chest|jack_o_lantern|carved_pumpkin|melon|cobweb)/;
 const LOOK_HIT_RANGE = [3, 12];
 const VILLAGE_EXPORT_RADIUS = 16;
 const VILLAGE_EXPORT_DY = [-4, 16];
 const VILLAGE_SPOT_BUDGET_MS = 25000;
 
+// First full block along a ray (step 0.5): {t, name} or null.
+function rayHitInfo(bot, eye, yaw, pitch, maxDist) {
+  const ch = Math.cos(pitch);
+  const dx = -Math.sin(yaw) * ch;
+  const dy = Math.sin(pitch);
+  const dz = -Math.cos(yaw) * ch;
+  for (let t = 0.5; t <= maxDist; t += 0.5) {
+    const b = blockAtXYZ(bot, eye.x + dx * t, eye.y + dy * t, eye.z + dz * t);
+    if (b === null) return null;
+    if (b.boundingBox === "block") return { t, name: b.name };
+  }
+  return null;
+}
+
 // Fraction of rays (every RAY_STEP_DEG horizontally, at RAY_PITCHES_DEG)
-// from the eye at `pos` that hit a full block within RAY_MAX_DIST.
+// from the eye at `pos` that hit a full block within RAY_MAX_DIST, the
+// fraction of those hits on built (village) material, and the sky light.
 function rayCoverage(bot, pos) {
   const eye = eyeOf(pos);
   let hits = 0;
+  let built = 0;
   let total = 0;
   const perYaw = [];
   for (let yawDeg = 0; yawDeg < 360; yawDeg += RAY_STEP_DEG) {
     let h = 0;
     for (const pitchDeg of RAY_PITCHES_DEG) {
       total++;
-      const d = rayHitDistance(bot, eye, yawDeg * DEG, pitchDeg * DEG, RAY_MAX_DIST);
-      if (d <= RAY_MAX_DIST) {
+      const hit = rayHitInfo(bot, eye, yawDeg * DEG, pitchDeg * DEG, RAY_MAX_DIST);
+      if (hit) {
         hits++;
         h++;
+        if (BUILT_BLOCK_RE.test(hit.name)) built++;
       }
     }
     perYaw.push(h);
   }
-  return { fraction: hits / total, per_yaw_hits: perYaw };
+  const eyeBlock = bot.blockAt(new Vec3(Math.floor(eye.x), Math.floor(eye.y), Math.floor(eye.z)));
+  const skyLight = eyeBlock && typeof eyeBlock.skyLight === "number" ? eyeBlock.skyLight : null;
+  return { fraction: hits / total, built_fraction: hits ? built / hits : 0, sky_light: skyLight, per_yaw_hits: perYaw };
+}
+
+function spotQualifies(cov) {
+  return cov.fraction >= RAY_MIN_COVERAGE && cov.built_fraction >= MIN_BUILT_FRACTION &&
+    (cov.sky_light === null || cov.sky_light >= MIN_SKY_LIGHT);
 }
 
 // First full block along the horizontal ray, up to maxDist (step 0.25).
@@ -441,6 +472,7 @@ async function planVillagePlacement(bot, rng, origin) {
   const spots = [];
   let checked = 0;
   let unloaded = 0;
+  const rejected = { coverage: 0, built: 0, dark: 0 };
   for (let dx = -VILLAGE_SPOT_RADIUS; dx <= VILLAGE_SPOT_RADIUS; dx += VILLAGE_SPOT_STRIDE) {
     for (let dz = -VILLAGE_SPOT_RADIUS; dz <= VILLAGE_SPOT_RADIUS; dz += VILLAGE_SPOT_STRIDE) {
       if (Date.now() > deadline) break;
@@ -450,20 +482,32 @@ async function planVillagePlacement(bot, rng, origin) {
         unloaded++;
         continue;
       }
+      // Highest standable level first: the surface, not a cave below it.
       for (let dy = 3; dy >= -3; dy--) {
         const y = base.y + dy;
         if (!isStandable(bot, x, y, z)) continue;
         checked++;
         const cov = rayCoverage(bot, { x, y, z });
-        if (cov.fraction >= RAY_MIN_COVERAGE) spots.push({ pos: { x, y, z }, coverage: cov.fraction, per_yaw: cov.per_yaw_hits });
+        if (spotQualifies(cov)) {
+          spots.push({ pos: { x, y, z }, coverage: cov.fraction, built_fraction: cov.built_fraction, sky_light: cov.sky_light, per_yaw: cov.per_yaw_hits });
+        } else if (cov.fraction < RAY_MIN_COVERAGE) {
+          rejected.coverage++;
+        } else if (cov.built_fraction < MIN_BUILT_FRACTION) {
+          rejected.built++;
+        } else {
+          rejected.dark++;
+        }
         break;
       }
     }
     await sleep(0);
   }
-  console.log(`[${bot.username}] village spots: ${spots.length} of ${checked} standable columns pass ray coverage (unloaded ${unloaded})`);
-  if (spots.length < 2) return { placement: null, spots_found: spots.length, columns_checked: checked };
-  const shuffledSpots = shuffled(spots, rng);
+  console.log(
+    `[${bot.username}] village spots: ${spots.length} of ${checked} standable columns qualify (rejected ${JSON.stringify(rejected)}, unloaded ${unloaded})`,
+  );
+  if (spots.length < 2) return { placement: null, spots_found: spots.length, columns_checked: checked, rejected };
+  // Most built-up spots first (seeded tie-break).
+  const shuffledSpots = shuffled(spots, rng).sort((p, q) => q.built_fraction - p.built_fraction);
   for (let tries = 0; tries < PLACEMENT_TRIES; tries++) {
     const A = shuffledSpots[tries % shuffledSpots.length];
     const partners = spots.filter((s) => {
@@ -488,14 +532,16 @@ async function planVillagePlacement(bot, rng, origin) {
         placement: {
           posA: A.pos, posB: B.pos, yawA, yawB,
           hitA: { x: hitA.x, y: hitA.y, z: hitA.z, dist: hitA.t }, hitB: { x: hitB.x, y: hitB.y, z: hitB.z, dist: hitB.t },
-          dots, coverageA: A.coverage, coverageB: B.coverage, per_yaw_a: A.per_yaw, per_yaw_b: B.per_yaw, tries: tries + 1,
+          dots, coverageA: A.coverage, coverageB: B.coverage, builtA: A.built_fraction, builtB: B.built_fraction,
+          skyA: A.sky_light, skyB: B.sky_light, per_yaw_a: A.per_yaw, per_yaw_b: B.per_yaw, tries: tries + 1,
         },
         spots_found: spots.length,
         columns_checked: checked,
+        rejected,
       };
     }
   }
-  return { placement: null, spots_found: spots.length, columns_checked: checked };
+  return { placement: null, spots_found: spots.length, columns_checked: checked, rejected };
 }
 
 // Non-air blocks within VILLAGE_EXPORT_RADIUS (horizontal) of either bot,
@@ -939,7 +985,7 @@ class SharedArenaEvalEpisode extends BaseEpisode {
       if (!res || !/^Spread/.test(res)) continue;
       await sleep(VILLAGE_SETTLE_MS);
       const r = await planVillagePlacement(bot, rng, bot.entity.position);
-      searchInfo = { spots_found: r.spots_found, columns_checked: r.columns_checked, landing: [bot.entity.position.x, bot.entity.position.y, bot.entity.position.z] };
+      searchInfo = { spots_found: r.spots_found, columns_checked: r.columns_checked, rejected: r.rejected, landing: [bot.entity.position.x, bot.entity.position.y, bot.entity.position.z] };
       placed = r.placement;
     }
     this._episodeMetadata.scene_search_attempts = attempts;
@@ -955,10 +1001,11 @@ class SharedArenaEvalEpisode extends BaseEpisode {
     const sweeps = [sweepPlan(rng), sweepPlan(rng)];
     const names = [bot.username, args.other_bot_name];
     const bots = {};
-    [[names[0], placed.posA, placed.yawA, sweeps[0], placed.hitA, placed.coverageA, placed.per_yaw_a],
-      [names[1], placed.posB, placed.yawB, sweeps[1], placed.hitB, placed.coverageB, placed.per_yaw_b]].forEach(([name, pos, yaw0, sw, hit, cov, perYaw]) => {
-      bots[name] = { name, pos: [pos.x, pos.y, pos.z], yaw0, ...sw, look_hit: hit, ray_coverage: cov, ray_hits_per_yaw: perYaw };
-    });
+    [[names[0], placed.posA, placed.yawA, sweeps[0], placed.hitA, placed.coverageA, placed.builtA, placed.skyA, placed.per_yaw_a],
+      [names[1], placed.posB, placed.yawB, sweeps[1], placed.hitB, placed.coverageB, placed.builtB, placed.skyB, placed.per_yaw_b]].forEach(
+      ([name, pos, yaw0, sw, hit, cov, built, sky, perYaw]) => {
+        bots[name] = { name, pos: [pos.x, pos.y, pos.z], yaw0, ...sw, look_hit: hit, ray_coverage: cov, built_fraction: built, sky_light: sky, ray_hits_per_yaw: perYaw };
+      });
     const dA = viewDir(placed.yawA);
     const dB = viewDir(placed.yawB);
     const startOverlap = {
@@ -993,7 +1040,8 @@ class SharedArenaEvalEpisode extends BaseEpisode {
       village: {
         located: located,
         search: searchInfo,
-        ray_check: { step_deg: RAY_STEP_DEG, pitches_deg: RAY_PITCHES_DEG, max_dist: RAY_MAX_DIST, min_coverage: RAY_MIN_COVERAGE },
+        ray_check: { step_deg: RAY_STEP_DEG, pitches_deg: RAY_PITCHES_DEG, max_dist: RAY_MAX_DIST, min_coverage: RAY_MIN_COVERAGE,
+          min_built_fraction: MIN_BUILT_FRACTION, min_sky_light: MIN_SKY_LIGHT },
         export_radius: VILLAGE_EXPORT_RADIUS,
         export_y_range: exported.y_range,
         export_columns: exported.columns,

@@ -180,6 +180,8 @@ def analyze_episode(a, b) -> dict:
         v = info_a["village"]
         rec["village"] = {"located": v.get("located"), "search": v.get("search"), "export_blocks": len(v.get("blocks", [])),
                           "ray_coverage": {n: bb.get("ray_coverage") for n, bb in (info_a.get("bots") or {}).items()},
+                          "built_fraction": {n: bb.get("built_fraction") for n, bb in (info_a.get("bots") or {}).items()},
+                          "sky_light": {n: bb.get("sky_light") for n, bb in (info_a.get("bots") or {}).items()},
                           "world_edits_for_placement": info_a.get("world_edits_for_placement", [])}
     if not rec["scene_check_passed"]:
         rec["reasons"].append("scene setup failed")
@@ -294,12 +296,15 @@ def inliers(kp1, d1, kp2, d2, matcher) -> dict:
         return {"matches": 0, "inliers": 0}
     raw = matcher.knnMatch(d1, d2, k=2)
     good = [m for m, n in (p for p in raw if len(p) == 2) if m.distance < 0.75 * n.distance]
-    if len(good) < 8:
+    if len(good) < 15:
         return {"matches": len(good), "inliers": 0}
     p1 = np.float32([kp1[m.queryIdx].pt for m in good])
     p2 = np.float32([kp2[m.trainIdx].pt for m in good])
     F, mask = cv2.findFundamentalMat(p1, p2, cv2.FM_RANSAC, 1.0, 0.999)
-    return {"matches": len(good), "inliers": int(mask.sum()) if mask is not None else 0}
+    # On failure OpenCV returns F None and an uninitialised mask.
+    if F is None or mask is None or F.shape[0] < 3:
+        return {"matches": len(good), "inliers": 0}
+    return {"matches": len(good), "inliers": int((mask.ravel() == 1).sum())}
 
 
 def sift_quick_check(records: list, loaded: dict) -> dict:
@@ -447,8 +452,11 @@ def main() -> int:
             for r in sub:
                 v = r.get("village") or {}
                 s = v.get("search") or {}
-                print(f"  {r['episode'][-3:]}/{r['instance'][-1]}: spots passing {s.get('spots_found')} of {s.get('columns_checked')} standable columns, "
-                      f"attempts {r.get('scene_search_attempts')}, exported blocks {v.get('export_blocks')}, edits {v.get('world_edits_for_placement')}")
+                bf = "/".join(f"{x:.2f}" for x in (v.get("built_fraction") or {}).values() if x is not None)
+                sl = "/".join(str(x) for x in (v.get("sky_light") or {}).values())
+                print(f"  {r['episode'][-3:]}/{r['instance'][-1]}: spots passing {s.get('spots_found')} of {s.get('columns_checked')} standable columns "
+                      f"(rejected {s.get('rejected')}), attempts {r.get('scene_search_attempts')}, built fraction A/B {bf}, sky light {sl}, "
+                      f"exported blocks {v.get('export_blocks')}, edits {v.get('world_edits_for_placement')}")
 
     if not args.no_sift:
         qc = sift_quick_check(records, loaded)
