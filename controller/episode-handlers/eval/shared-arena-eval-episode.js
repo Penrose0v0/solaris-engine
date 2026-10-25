@@ -371,7 +371,7 @@ const VILLAGE_LOCATE = "#minecraft:village";
 const VILLAGE_LAND_RADIUS = 8;
 const VILLAGE_SPOT_RADIUS = 24;
 const VILLAGE_SPOT_STRIDE = 2;
-const VILLAGE_MAX_ATTEMPTS = 8;
+const VILLAGE_MAX_ATTEMPTS = 12;
 const VILLAGE_SETTLE_MS = 6000;
 const VILLAGE_HOP_RANGE = 600;
 const RAY_STEP_DEG = 15;
@@ -381,8 +381,11 @@ const RAY_MIN_COVERAGE = 0.8;
 // Ray coverage alone prefers caves, overhangs and cliff pockets (trial002
 // run 1). A village spot must also be outdoors (sky light at the eye) and
 // most of what the rays hit must be built material, not terrain.
-const MIN_SKY_LIGHT = 12;
+const MIN_SKY_LIGHT = 14;
 const MIN_BUILT_FRACTION = 0.4;
+// Nothing solid straight above the eye for this many blocks: not under a
+// roof or awning (trial002 run 2 still put bots under house eaves).
+const OPEN_ABOVE_BLOCKS = 10;
 const BUILT_BLOCK_RE =
   /(planks|cobblestone|stripped_|_door|_fence|_stairs|_slab|bell|hay_block|lantern|torch|dirt_path|smooth_sandstone|cut_sandstone|chiseled_sandstone|terracotta|bricks|glass|campfire|barrel|composter|crafting_table|lectern|smithing_table|loom|cartography_table|fletching_table|furnace|smoker|grindstone|stonecutter|cauldron|_bed|_wool|bookshelf|mossy|_trapdoor|_wall$|chest|jack_o_lantern|carved_pumpkin|melon|cobweb)/;
 const LOOK_HIT_RANGE = [3, 12];
@@ -428,11 +431,19 @@ function rayCoverage(bot, pos) {
   }
   const eyeBlock = bot.blockAt(new Vec3(Math.floor(eye.x), Math.floor(eye.y), Math.floor(eye.z)));
   const skyLight = eyeBlock && typeof eyeBlock.skyLight === "number" ? eyeBlock.skyLight : null;
-  return { fraction: hits / total, built_fraction: hits ? built / hits : 0, sky_light: skyLight, per_yaw_hits: perYaw };
+  let openAbove = true;
+  for (let dy = 1; dy <= OPEN_ABOVE_BLOCKS; dy++) {
+    const b = blockAtXYZ(bot, eye.x, eye.y + dy, eye.z);
+    if (b !== null && b.boundingBox !== "empty") {
+      openAbove = false;
+      break;
+    }
+  }
+  return { fraction: hits / total, built_fraction: hits ? built / hits : 0, sky_light: skyLight, open_above: openAbove, per_yaw_hits: perYaw };
 }
 
 function spotQualifies(cov) {
-  return cov.fraction >= RAY_MIN_COVERAGE && cov.built_fraction >= MIN_BUILT_FRACTION &&
+  return cov.fraction >= RAY_MIN_COVERAGE && cov.built_fraction >= MIN_BUILT_FRACTION && cov.open_above &&
     (cov.sky_light === null || cov.sky_light >= MIN_SKY_LIGHT);
 }
 
@@ -472,7 +483,7 @@ async function planVillagePlacement(bot, rng, origin) {
   const spots = [];
   let checked = 0;
   let unloaded = 0;
-  const rejected = { coverage: 0, built: 0, dark: 0 };
+  const rejected = { coverage: 0, built: 0, roof: 0, dark: 0 };
   for (let dx = -VILLAGE_SPOT_RADIUS; dx <= VILLAGE_SPOT_RADIUS; dx += VILLAGE_SPOT_STRIDE) {
     for (let dz = -VILLAGE_SPOT_RADIUS; dz <= VILLAGE_SPOT_RADIUS; dz += VILLAGE_SPOT_STRIDE) {
       if (Date.now() > deadline) break;
@@ -494,6 +505,8 @@ async function planVillagePlacement(bot, rng, origin) {
           rejected.coverage++;
         } else if (cov.built_fraction < MIN_BUILT_FRACTION) {
           rejected.built++;
+        } else if (!cov.open_above) {
+          rejected.roof++;
         } else {
           rejected.dark++;
         }
@@ -848,7 +861,10 @@ class SharedArenaEvalEpisode extends BaseEpisode {
     console.log(`[${bot.username}] Episode ${episodeNum}: primary, scene ${sceneType}`);
     // Freeze random ticks (crop growth, grass spread, leaf decay) and the
     // weather for the episode; mobs and drops off.
-    for (const cmd of ["gamerule randomTickSpeed 0", "weather clear 1000", "gamerule doTileDrops false", "gamerule doMobLoot false", "gamerule doMobSpawning false"]) {
+    // `weather clear <n>` takes ticks when unitless (1000 = 50 s, and the
+    // rain came back mid-episode in trial002 run 2), so stop the weather
+    // cycle for the episode and clear with an explicit duration.
+    for (const cmd of ["gamerule randomTickSpeed 0", "gamerule doWeatherCycle false", "weather clear 1200s", "gamerule doTileDrops false", "gamerule doMobLoot false", "gamerule doMobSpawning false"]) {
       await rconTry(bot, rcon, cmd);
     }
     return sceneType === "village"
@@ -1041,7 +1057,7 @@ class SharedArenaEvalEpisode extends BaseEpisode {
         located: located,
         search: searchInfo,
         ray_check: { step_deg: RAY_STEP_DEG, pitches_deg: RAY_PITCHES_DEG, max_dist: RAY_MAX_DIST, min_coverage: RAY_MIN_COVERAGE,
-          min_built_fraction: MIN_BUILT_FRACTION, min_sky_light: MIN_SKY_LIGHT },
+          min_built_fraction: MIN_BUILT_FRACTION, min_sky_light: MIN_SKY_LIGHT, open_above_blocks: OPEN_ABOVE_BLOCKS },
         export_radius: VILLAGE_EXPORT_RADIUS,
         export_y_range: exported.y_range,
         export_columns: exported.columns,
@@ -1068,7 +1084,7 @@ class SharedArenaEvalEpisode extends BaseEpisode {
 
   async tearDownEpisode(bot, rcon, sharedBotRng, coordinator, episodeNum, args) {
     if (!this._isPrimary) return;
-    for (const cmd of ["gamerule randomTickSpeed 3", "gamerule doTileDrops true", "gamerule doMobLoot true", "gamerule doMobSpawning true"]) {
+    for (const cmd of ["gamerule randomTickSpeed 3", "gamerule doWeatherCycle true", "gamerule doTileDrops true", "gamerule doMobLoot true", "gamerule doMobSpawning true"]) {
       await rconTry(bot, rcon, cmd);
     }
     if (this._layout && this._layout.courtyard) {

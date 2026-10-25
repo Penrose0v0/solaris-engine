@@ -62,8 +62,10 @@ level per column: a spot qualifies when at least 80% of the rays every
 least 40% of those hits are built material (planks, cobblestone, stripped
 logs, doors, fences, stairs, slabs, bells, hay, lanterns, paths, cut
 sandstone, terracotta, bricks, ...; ray coverage alone picks caves and
-cliff pockets) and the sky light at the eye is >= 12 (outdoors). The
-most built-up spots are tried first. All entities within 64 blocks (villagers, iron
+cliff pockets), the sky light at the eye is >= 14 and nothing solid sits
+within 10 blocks straight above the eye (outdoors, not under a roof). The
+most built-up spots are tried first. The weather cycle is off for the
+episode (`weather clear` with a unitless duration is ticks, not seconds). All entities within 64 blocks (villagers, iron
 golems, animals, item frames) are removed before the bots are placed. No
 village block is changed (`world_edits_for_placement` lists any clearing
 done for standing; it is empty in this dataset). Every non-air block within
