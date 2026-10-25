@@ -37,9 +37,11 @@ const {
 // id, episode number) so the plan is reproducible.
 const SHARED_ARENA_BASE_SEED = 20261025;
 
-// Scene type per episode: (instance id + episode number) parity, so a
-// 2-world x 5-episode trial gets five of each and both worlds host both.
+// Scene type per episode: (instance id + episode number) parity when the
+// village scene is enabled, else courtyard only. The village scene is kept
+// but off by default: the eval side could not use it (trial002).
 const SCENE_TYPES = ["courtyard", "village"];
+const VILLAGE_ENABLED = false;
 
 // ---------------------------------------------------------------------------
 // Courtyard: a square of wall modules around an INNER_SIZE x INNER_SIZE
@@ -55,112 +57,382 @@ const WALL_OFFSET = INNER_HALF + 1; // 8
 const MODULE_WIDTH = 3;
 const MODULES_PER_SIDE = INNER_SIZE / MODULE_WIDTH; // 5
 const MODULE_HEIGHT_RANGE = [4, 6];
+// Tallest voxel a module may place above its height (lantern posts): the
+// levelled square is cleared to max_height + 1.
 const MAX_THICKNESS = 2;
 const ARENA_MARGIN = 1;
 const COURTYARD_ARENA_HALF = WALL_OFFSET + MAX_THICKNESS - 1 + ARENA_MARGIN; // 10
 
-// Material palettes: wood + stone pairs. `wall2` is the stone variant,
-// `accent` a glazed terracotta. No transparent, falling, liquid or animated
-// blocks anywhere (lanterns are static, torches are not used).
+// Material palettes: wood + stone pairs. `wall` / `wall2` / `wall3` are the
+// stone and its variants, `accent` a glazed terracotta, `floor` the blocks
+// mixed into the yard. No transparent, liquid, falling, burning or
+// animated blocks anywhere (lanterns and unlit candles are static, torches,
+// campfires, glass, iron bars, prismarine, copper that weathers and sand
+// are not used).
 const PALETTES = {
   oak_stone: {
     planks: "oak_planks", log: "oak_log", wall: "stone_bricks", wall2: "mossy_stone_bricks", wall3: "chiseled_stone_bricks",
-    slab: "stone_brick_slab", stairs: "stone_brick_stairs", door: "oak_door", accent: "light_gray_glazed_terracotta",
+    slab: "stone_brick_slab", stairs: "stone_brick_stairs", door: "oak_door", trapdoor: "oak_trapdoor", fence: "oak_fence",
+    gate: "oak_fence_gate", wallblock: "stone_brick_wall", accent: "light_gray_glazed_terracotta",
     floor: ["cobblestone", "stone_bricks", "mossy_cobblestone", "andesite", "oak_planks"],
   },
   spruce_deepslate: {
     planks: "spruce_planks", log: "spruce_log", wall: "deepslate_bricks", wall2: "deepslate_tiles", wall3: "polished_deepslate",
-    slab: "deepslate_brick_slab", stairs: "deepslate_brick_stairs", door: "spruce_door", accent: "cyan_glazed_terracotta",
+    slab: "deepslate_brick_slab", stairs: "deepslate_brick_stairs", door: "spruce_door", trapdoor: "spruce_trapdoor", fence: "spruce_fence",
+    gate: "spruce_fence_gate", wallblock: "deepslate_brick_wall", accent: "cyan_glazed_terracotta",
     floor: ["cobbled_deepslate", "deepslate_bricks", "spruce_planks", "tuff", "polished_deepslate"],
   },
   birch_sandstone: {
     planks: "birch_planks", log: "birch_log", wall: "sandstone", wall2: "cut_sandstone", wall3: "chiseled_sandstone",
-    slab: "sandstone_slab", stairs: "sandstone_stairs", door: "birch_door", accent: "yellow_glazed_terracotta",
+    slab: "sandstone_slab", stairs: "sandstone_stairs", door: "birch_door", trapdoor: "birch_trapdoor", fence: "birch_fence",
+    gate: "birch_fence_gate", wallblock: "sandstone_wall", accent: "yellow_glazed_terracotta",
     floor: ["smooth_sandstone", "sandstone", "birch_planks", "mud_bricks", "packed_mud"],
   },
   cherry_terracotta: {
     planks: "cherry_planks", log: "cherry_log", wall: "bricks", wall2: "terracotta", wall3: "red_terracotta",
-    slab: "brick_slab", stairs: "brick_stairs", door: "cherry_door", accent: "pink_glazed_terracotta",
+    slab: "brick_slab", stairs: "brick_stairs", door: "cherry_door", trapdoor: "cherry_trapdoor", fence: "cherry_fence",
+    gate: "cherry_fence_gate", wallblock: "brick_wall", accent: "pink_glazed_terracotta",
     floor: ["bricks", "terracotta", "cherry_planks", "mud_bricks", "polished_granite"],
+  },
+  dark_oak_blackstone: {
+    planks: "dark_oak_planks", log: "dark_oak_log", wall: "polished_blackstone_bricks", wall2: "blackstone", wall3: "chiseled_polished_blackstone",
+    slab: "polished_blackstone_brick_slab", stairs: "polished_blackstone_brick_stairs", door: "dark_oak_door", trapdoor: "dark_oak_trapdoor",
+    fence: "dark_oak_fence", gate: "dark_oak_fence_gate", wallblock: "polished_blackstone_brick_wall", accent: "orange_glazed_terracotta",
+    floor: ["polished_blackstone", "blackstone", "dark_oak_planks", "gilded_blackstone", "polished_basalt"],
+  },
+  acacia_quartz: {
+    planks: "acacia_planks", log: "acacia_log", wall: "quartz_bricks", wall2: "smooth_quartz", wall3: "chiseled_quartz_block",
+    slab: "quartz_slab", stairs: "quartz_stairs", door: "acacia_door", trapdoor: "acacia_trapdoor", fence: "acacia_fence",
+    gate: "acacia_fence_gate", wallblock: "diorite_wall", accent: "lime_glazed_terracotta",
+    floor: ["quartz_bricks", "smooth_quartz", "acacia_planks", "polished_diorite", "diorite"],
+  },
+  jungle_mud: {
+    planks: "jungle_planks", log: "jungle_log", wall: "mud_bricks", wall2: "packed_mud", wall3: "mossy_cobblestone",
+    slab: "mud_brick_slab", stairs: "mud_brick_stairs", door: "jungle_door", trapdoor: "jungle_trapdoor", fence: "jungle_fence",
+    gate: "jungle_fence_gate", wallblock: "mud_brick_wall", accent: "green_glazed_terracotta",
+    floor: ["mud_bricks", "packed_mud", "jungle_planks", "mossy_cobblestone", "coarse_dirt"],
+  },
+  mangrove_tuff: {
+    planks: "mangrove_planks", log: "mangrove_log", wall: "tuff_bricks", wall2: "polished_tuff", wall3: "chiseled_tuff",
+    slab: "tuff_brick_slab", stairs: "tuff_brick_stairs", door: "mangrove_door", trapdoor: "mangrove_trapdoor", fence: "mangrove_fence",
+    gate: "mangrove_fence_gate", wallblock: "tuff_brick_wall", accent: "red_glazed_terracotta",
+    floor: ["tuff_bricks", "polished_tuff", "mangrove_planks", "tuff", "cobbled_deepslate"],
+  },
+  bamboo_copper: {
+    planks: "bamboo_planks", log: "bamboo_block", wall: "waxed_cut_copper", wall2: "waxed_copper_block", wall3: "waxed_chiseled_copper",
+    slab: "waxed_cut_copper_slab", stairs: "waxed_cut_copper_stairs", door: "bamboo_door", trapdoor: "bamboo_trapdoor", fence: "bamboo_fence",
+    gate: "bamboo_fence_gate", wallblock: "andesite_wall", accent: "purple_glazed_terracotta",
+    floor: ["bamboo_mosaic", "bamboo_planks", "waxed_cut_copper", "polished_andesite", "andesite"],
+  },
+  crimson_nether: {
+    planks: "crimson_planks", log: "crimson_stem", wall: "nether_bricks", wall2: "red_nether_bricks", wall3: "chiseled_nether_bricks",
+    slab: "nether_brick_slab", stairs: "nether_brick_stairs", door: "crimson_door", trapdoor: "crimson_trapdoor", fence: "crimson_fence",
+    gate: "crimson_fence_gate", wallblock: "nether_brick_wall", accent: "magenta_glazed_terracotta",
+    floor: ["nether_bricks", "red_nether_bricks", "crimson_planks", "polished_blackstone", "basalt"],
+  },
+  warped_endstone: {
+    planks: "warped_planks", log: "warped_stem", wall: "end_stone_bricks", wall2: "end_stone", wall3: "purpur_pillar",
+    slab: "end_stone_brick_slab", stairs: "end_stone_brick_stairs", door: "warped_door", trapdoor: "warped_trapdoor", fence: "warped_fence",
+    gate: "warped_fence_gate", wallblock: "end_stone_brick_wall", accent: "blue_glazed_terracotta",
+    floor: ["end_stone_bricks", "purpur_block", "warped_planks", "end_stone", "polished_andesite"],
   },
 };
 
-// A module returns voxels {u, v, w, block} for a palette P and height H:
-// u 0..2 along the wall, v 0..H-1 up (v == H allowed for lanterns on the
-// top), w 0 = inner layer, 1 = outer layer, -1 = protruding inwards. `ctx`
-// carries the side-dependent block states: ctx.inward (facing towards the
-// yard), ctx.outward, ctx.axis (log axis along the wall).
+const BANNER_COLOURS = ["red", "blue", "yellow", "white", "green", "orange", "purple", "cyan", "lime", "magenta", "black"];
+const POTTED_PLANTS = ["potted_poppy", "potted_dandelion", "potted_red_tulip", "potted_blue_orchid", "potted_azure_bluet", "potted_oak_sapling",
+  "potted_fern", "potted_cactus", "potted_allium", "potted_cornflower", "potted_red_mushroom", "potted_bamboo"];
+const CARPET_COLOURS = ["red", "blue", "yellow", "green", "white", "orange", "purple", "light_blue"];
+const WORKSTATIONS = ["crafting_table", "composter[level=0]", "barrel[facing=up]", "smithing_table", "loom", "cartography_table",
+  "fletching_table", "cauldron", "anvil", "grindstone[face=floor]", "stonecutter", "chiseled_bookshelf", "hay_block", "note_block", "jukebox"];
+
+// A module returns voxels {u, v, w, block} for a palette P, height H and
+// the side context ctx: u 0..2 along the wall, v 0..H-1 up (v == H allowed
+// for things standing on the top), w 0 = inner layer, 1 = outer layer,
+// -1 = protruding into the yard. ctx: inward (facing towards the yard),
+// outward, axis (log axis along the wall), rng / pick for the module's
+// random variant.
 function solidBox(P, H, block, w = 0) {
   const out = [];
   for (let u = 0; u < MODULE_WIDTH; u++) for (let v = 0; v < H; v++) out.push({ u, v, w, block });
   return out;
 }
 
+function without(voxels, pred) {
+  return voxels.filter((b) => !pred(b));
+}
+
+function stairsIn(P, ctx, half) {
+  return `${P.stairs}[facing=${ctx.outward},half=${half}]`;
+}
+
 const MODULES = {
-  // Stone wall with a 1x2 window niche (inner layer open, outer layer solid).
-  stone_window: (P, H) => [
-    ...solidBox(P, H, P.wall, 0).filter((b) => !(b.u === 1 && (b.v === 1 || b.v === 2))),
-    ...solidBox(P, H, P.wall2, 1),
-    { u: 1, v: 3, w: 0, block: P.slab + "[type=bottom]" },
-  ],
-  // Log columns with a planks infill and a log beam on top.
+  // Stone wall with a window niche (inner layer open, outer solid); window
+  // column, height and sill vary.
+  stone_window: (P, H, ctx) => {
+    const u = ctx.pick([0, 1, 2]);
+    const tall = ctx.rng() < 0.5;
+    return [
+      ...without(solidBox(P, H, P.wall, 0), (b) => b.u === u && (b.v === 1 || (tall && b.v === 2))),
+      ...solidBox(P, H, P.wall2, 1),
+      { u, v: 0, w: -1, block: stairsIn(P, ctx, "bottom") },
+    ];
+  },
+  // Log columns with a planks infill, beam on top; optional middle beam.
   timber_frame: (P, H, ctx) => {
     const out = [];
+    const midBeam = ctx.rng() < 0.5 ? 2 : -1;
     for (let v = 0; v < H; v++) {
       out.push({ u: 0, v, w: 0, block: P.log }, { u: 2, v, w: 0, block: P.log });
-      out.push({ u: 1, v, w: 0, block: v === H - 1 ? `${P.log}[axis=${ctx.axis}]` : P.planks });
+      out.push({ u: 1, v, w: 0, block: v === H - 1 || v === midBeam ? `${P.log}[axis=${ctx.axis}]` : P.planks });
     }
     return out;
   },
-  // Planks frame with rows of bookshelves.
-  bookshelf: (P, H) => solidBox(P, H, P.planks).map((b) => (b.v >= 1 && b.v <= H - 2 ? { ...b, block: "bookshelf" } : b)),
-  // Planks wall with a door in the middle and lanterns on top of the sides.
-  door_lanterns: (P, H, ctx) => [
-    ...solidBox(P, H, P.planks).filter((b) => !(b.u === 1 && b.v <= 1)),
-    { u: 1, v: 0, w: 0, block: `${P.door}[facing=${ctx.inward},half=lower]` },
-    { u: 1, v: 1, w: 0, block: `${P.door}[facing=${ctx.inward},half=upper]` },
-    { u: 0, v: H, w: 0, block: "lantern" },
-    { u: 2, v: H, w: 0, block: "lantern" },
-  ],
-  // Fireplace niche: inner layer open at the bottom centre, chimney of wall3 above.
-  fireplace_niche: (P, H) => [
-    ...solidBox(P, H, P.wall, 0).filter((b) => !(b.u === 1 && b.v <= 1)).map((b) => (b.u === 1 ? { ...b, block: P.wall3 } : b)),
-    ...solidBox(P, H, P.wall2, 1),
-  ],
-  // Stone wall with a glazed terracotta band and single accents.
-  glazed_band: (P, H) => solidBox(P, H, P.wall).map((b) => (b.v === 2 || (b.u === 1 && (b.v === 0 || b.v === H - 1)) ? { ...b, block: P.accent } : b)),
+  // Planks frame with rows of bookshelves (some chiseled).
+  bookshelf: (P, H, ctx) => solidBox(P, H, P.planks).map((b) =>
+    b.v >= 1 && b.v <= H - 2 ? { ...b, block: ctx.rng() < 0.25 ? `chiseled_bookshelf[facing=${ctx.inward}]` : "bookshelf" } : b),
+  // Planks wall with a door and lanterns (on top of the wall or beside the door).
+  door_lanterns: (P, H, ctx) => {
+    const onTop = ctx.rng() < 0.5;
+    return [
+      ...without(solidBox(P, H, P.planks), (b) => b.u === 1 && b.v <= 1),
+      { u: 1, v: 0, w: 0, block: `${P.door}[facing=${ctx.inward},half=lower]` },
+      { u: 1, v: 1, w: 0, block: `${P.door}[facing=${ctx.inward},half=upper]` },
+      ...(onTop
+        ? [{ u: 0, v: H, w: 0, block: "lantern" }, { u: 2, v: H, w: 0, block: "lantern" }]
+        : [{ u: 0, v: 2, w: -1, block: "lantern[hanging=false]" }, { u: 2, v: 2, w: -1, block: "lantern[hanging=false]" },
+          { u: 0, v: 1, w: -1, block: P.slab + "[type=top]" }, { u: 2, v: 1, w: -1, block: P.slab + "[type=top]" }]),
+    ];
+  },
+  // Fireplace niche with a chimney column of wall3 (or logs) above it.
+  fireplace_niche: (P, H, ctx) => {
+    const chimney = ctx.rng() < 0.5 ? P.wall3 : P.wall2;
+    return [
+      ...without(solidBox(P, H, P.wall, 0), (b) => b.u === 1 && b.v <= 1).map((b) => (b.u === 1 ? { ...b, block: chimney } : b)),
+      ...solidBox(P, H, P.wall2, 1),
+      { u: 1, v: 2, w: -1, block: P.slab + "[type=bottom]" },
+    ];
+  },
+  // Stone wall with a glazed terracotta band at a random height and single accents.
+  glazed_band: (P, H, ctx) => {
+    const band = ctx.pick([1, 2, 3]);
+    return solidBox(P, H, P.wall).map((b) => (b.v === band || (b.u === 1 && (b.v === 0 || b.v === H - 1)) ? { ...b, block: P.accent } : b));
+  },
   // Stone wall with an eave of upper slabs protruding inwards under the top row.
   eave_slab: (P, H) => [
     ...solidBox(P, H, P.wall2),
-    { u: 0, v: H - 1, w: -1, block: P.slab + "[type=top]" },
-    { u: 1, v: H - 1, w: -1, block: P.slab + "[type=top]" },
-    { u: 2, v: H - 1, w: -1, block: P.slab + "[type=top]" },
+    ...[0, 1, 2].map((u) => ({ u, v: H - 1, w: -1, block: P.slab + "[type=top]" })),
   ],
   // Planks wall with a log pillar protruding inwards, capped with a slab.
-  pillar_out: (P, H) => [
-    ...solidBox(P, H, P.planks),
-    ...Array.from({ length: H }, (_, v) => ({ u: 1, v, w: -1, block: P.log })),
-    { u: 1, v: H, w: -1, block: P.slab + "[type=bottom]" },
-  ],
-  // Stone wall mixing the two stone variants (seeded noise, see build).
-  brick_mixed: (P, H) => solidBox(P, H, P.wall).map((b) => ({ ...b, mix: true })),
-  // Arched alcove: inner layer open 1x3 with a stair arch on top, outer layer solid.
-  arched_alcove: (P, H, ctx) => [
-    ...solidBox(P, H, P.wall, 0).filter((b) => !(b.u === 1 && b.v <= 2)),
-    ...solidBox(P, H, P.wall2, 1),
-    { u: 0, v: 3, w: -1, block: `${P.stairs}[facing=${ctx.outward},half=top]` },
-    { u: 2, v: 3, w: -1, block: `${P.stairs}[facing=${ctx.outward},half=top]` },
-  ],
+  pillar_out: (P, H, ctx) => {
+    const u = ctx.pick([0, 1, 2]);
+    return [
+      ...solidBox(P, H, P.planks),
+      ...Array.from({ length: H }, (_, v) => ({ u, v, w: -1, block: P.log })),
+      { u, v: H, w: -1, block: P.slab + "[type=bottom]" },
+    ];
+  },
+  // Stone wall mixing the stone variants (seeded noise).
+  brick_mixed: (P, H, ctx) => solidBox(P, H, P.wall).map((b) => ({ ...b, block: ctx.rng() < 0.3 ? P.wall2 : ctx.rng() < 0.15 ? P.wall3 : P.wall })),
+  // Arched alcove: inner layer open 1x3 with a stair arch on top, outer solid.
+  arched_alcove: (P, H, ctx) => {
+    const u = ctx.pick([0, 1, 2]);
+    return [
+      ...without(solidBox(P, H, P.wall, 0), (b) => b.u === u && b.v <= 2),
+      ...solidBox(P, H, P.wall2, 1),
+      ...[u - 1, u + 1].filter((x) => x >= 0 && x <= 2).map((x) => ({ u: x, v: 3, w: -1, block: stairsIn(P, ctx, "top") })),
+    ];
+  },
   // Horizontal logs along the wall alternating with planks rows.
-  log_stack: (P, H, ctx) => solidBox(P, H, P.planks).map((b) => (b.v % 2 === 0 ? { ...b, block: `${P.log}[axis=${ctx.axis}]` } : b)),
+  log_stack: (P, H, ctx) => {
+    const phase = ctx.pick([0, 1]);
+    return solidBox(P, H, P.planks).map((b) => (b.v % 2 === phase ? { ...b, block: `${P.log}[axis=${ctx.axis}]` } : b));
+  },
   // Glazed terracotta centre panel between log columns.
   terracotta_panel: (P, H) => solidBox(P, H, P.log).map((b) => (b.u === 1 ? { ...b, block: b.v === 0 || b.v === H - 1 ? P.wall3 : P.accent } : b)),
-  // Rough stone base, planks above, log on top.
-  cobble_base: (P, H, ctx) => solidBox(P, H, P.planks).map((b) => (b.v <= 1 ? { ...b, block: P.wall2 } : b.v === H - 1 ? { ...b, block: `${P.log}[axis=${ctx.axis}]` } : b)),
+  // Rough stone base, planks above, log on top; base height varies.
+  cobble_base: (P, H, ctx) => {
+    const base = ctx.pick([1, 2]);
+    return solidBox(P, H, P.planks).map((b) => (b.v <= base ? { ...b, block: P.wall2 } : b.v === H - 1 ? { ...b, block: `${P.log}[axis=${ctx.axis}]` } : b));
+  },
   // Buttressed stone: wall3 columns at the sides protruding inwards on the lower half.
   buttress: (P, H) => [
     ...solidBox(P, H, P.wall),
     ...[0, 2].flatMap((u) => Array.from({ length: Math.ceil(H / 2) }, (_, v) => ({ u, v, w: -1, block: P.wall3 }))),
+  ],
+  // Two small window niches with stair sills.
+  double_window: (P, H, ctx) => {
+    const v = ctx.pick([1, 2]);
+    return [
+      ...without(solidBox(P, H, P.wall, 0), (b) => (b.u === 0 || b.u === 2) && b.v === v),
+      ...solidBox(P, H, P.wall3, 1),
+      { u: 0, v: v - 1, w: -1, block: stairsIn(P, ctx, "bottom") },
+      { u: 2, v: v - 1, w: -1, block: stairsIn(P, ctx, "bottom") },
+    ];
+  },
+  // Balcony: slab floor protruding inwards at mid height with a fence railing.
+  balcony: (P, H, ctx) => {
+    const v = ctx.pick([1, 2]);
+    return [
+      ...solidBox(P, H, P.planks),
+      ...[0, 1, 2].map((u) => ({ u, v, w: -1, block: P.slab + "[type=top]" })),
+      ...[0, 1, 2].map((u) => ({ u, v: v + 1, w: -1, block: P.fence })),
+    ];
+  },
+  // Window niche with open trapdoor shutters on both sides.
+  shuttered_window: (P, H, ctx) => [
+    ...without(solidBox(P, H, P.wall, 0), (b) => b.u === 1 && (b.v === 1 || b.v === 2)),
+    ...solidBox(P, H, P.wall2, 1),
+    { u: 0, v: 1, w: -1, block: `${P.trapdoor}[facing=${ctx.outward},half=bottom,open=true]` },
+    { u: 2, v: 1, w: -1, block: `${P.trapdoor}[facing=${ctx.outward},half=bottom,open=true]` },
+    { u: 0, v: 2, w: -1, block: `${P.trapdoor}[facing=${ctx.outward},half=top,open=true]` },
+    { u: 2, v: 2, w: -1, block: `${P.trapdoor}[facing=${ctx.outward},half=top,open=true]` },
+  ],
+  // Stone wall with a ladder up one side and a trapdoor hatch on top.
+  ladder_wall: (P, H, ctx) => {
+    const u = ctx.pick([0, 2]);
+    return [
+      ...solidBox(P, H, P.wall2),
+      ...Array.from({ length: H }, (_, v) => ({ u, v, w: -1, block: `ladder[facing=${ctx.inward}]` })),
+      { u, v: H, w: 0, block: `${P.trapdoor}[facing=${ctx.inward},half=bottom,open=true]` },
+    ];
+  },
+  // Planks wall between log columns with a wall banner.
+  banner_wall: (P, H, ctx) => [
+    ...solidBox(P, H, P.planks).map((b) => (b.u !== 1 ? { ...b, block: P.log } : b)),
+    { u: 1, v: ctx.pick([1, 2]), w: -1, block: `${ctx.pick(BANNER_COLOURS)}_wall_banner[facing=${ctx.inward}]` },
+  ],
+  // Window niche with a slab sill carrying flower pots.
+  potted_sill: (P, H, ctx) => [
+    ...without(solidBox(P, H, P.wall, 0), (b) => b.u === 1 && b.v === 2),
+    ...solidBox(P, H, P.wall3, 1),
+    ...[0, 1, 2].map((u) => ({ u, v: 1, w: -1, block: P.slab + "[type=top]" })),
+    ...[0, 1, 2].filter(() => ctx.rng() < 0.8).map((u) => ({ u, v: 2, w: -1, block: ctx.pick(POTTED_PLANTS) })),
+  ],
+  // Storage: barrels stacked against a planks wall.
+  barrel_storage: (P, H, ctx) => [
+    ...solidBox(P, H, P.planks).map((b) => (b.v === 0 ? { ...b, block: P.wall2 } : b)),
+    ...[0, 1, 2].flatMap((u) => Array.from({ length: ctx.pick([1, 2]) }, (_, v) => ({ u, v, w: -1, block: "barrel[facing=up]" }))),
+  ],
+  // Reading corner: lectern in front, bookshelves above.
+  lectern_corner: (P, H, ctx) => [
+    ...solidBox(P, H, P.planks).map((b) => (b.v >= 1 && b.v <= 2 ? { ...b, block: "bookshelf" } : b)),
+    { u: ctx.pick([0, 1, 2]), v: 0, w: -1, block: `lectern[facing=${ctx.inward}]` },
+  ],
+  // Battlement: stone wall with crenellations on top.
+  battlement: (P, H, ctx) => {
+    const gap = ctx.pick([0, 1]);
+    return [
+      ...solidBox(P, H, P.wall),
+      ...[0, 1, 2].filter((u) => (u + gap) % 2 === 0).map((u) => ({ u, v: H, w: 0, block: P.wallblock })),
+    ];
+  },
+  // Lamp bracket: a slab protruding under the top with a chain and a hanging lantern.
+  chain_lamp: (P, H, ctx) => {
+    const u = ctx.pick([0, 1, 2]);
+    return [
+      ...solidBox(P, H, P.wall2),
+      { u, v: H - 1, w: -1, block: P.slab + "[type=top]" },
+      { u, v: H - 2, w: -1, block: "chain[axis=y]" },
+      { u, v: H - 3, w: -1, block: "lantern[hanging=true]" },
+    ];
+  },
+  // Row of upside-down stair corbels across the wall.
+  stair_corbels: (P, H, ctx) => {
+    const v = ctx.pick([H - 2, H - 3]);
+    return [
+      ...solidBox(P, H, P.wall),
+      ...[0, 1, 2].map((u) => ({ u, v, w: -1, block: stairsIn(P, ctx, "top") })),
+    ];
+  },
+  // Chest set into a small alcove.
+  chest_alcove: (P, H, ctx) => {
+    const u = ctx.pick([0, 1, 2]);
+    return [
+      ...solidBox(P, H, P.wall, 0).map((b) => (b.u === u && b.v === 1 ? { ...b, block: `chest[facing=${ctx.inward}]` } : b)),
+      ...solidBox(P, H, P.wall2, 1),
+    ];
+  },
+  // Barn wall: hay bales between log rows.
+  hay_stack: (P, H, ctx) => solidBox(P, H, "hay_block").map((b) => (b.v % 2 === 1 ? { ...b, block: `${P.log}[axis=${ctx.axis}]` } : b)),
+  // Cross of the chiseled stone over the plain stone.
+  accent_cross: (P, H, ctx) => {
+    const row = ctx.pick([1, 2]);
+    return solidBox(P, H, P.wall).map((b) => (b.u === 1 || b.v === row ? { ...b, block: P.wall3 } : b));
+  },
+  // Shelf with unlit candles.
+  candle_shelf: (P, H, ctx) => {
+    const v = ctx.pick([1, 2]);
+    return [
+      ...solidBox(P, H, P.planks),
+      ...[0, 1, 2].map((u) => ({ u, v, w: -1, block: P.slab + "[type=top]" })),
+      ...[0, 1, 2].filter(() => ctx.rng() < 0.8).map((u) => ({ u, v: v + 1, w: -1, block: `${ctx.pick(["", "white_", "red_", "blue_", "yellow_"])}candle[candles=${ctx.pick([1, 2, 3, 4])},lit=false]` })),
+    ];
+  },
+  // Workbench row of different stations in front of a planks wall.
+  workbench_row: (P, H, ctx) => [
+    ...solidBox(P, H, P.planks).map((b) => (b.v === H - 1 ? { ...b, block: `${P.log}[axis=${ctx.axis}]` } : b)),
+    ...[0, 1, 2].map((u) => ({ u, v: 0, w: -1, block: ctx.pick(WORKSTATIONS) })),
+  ],
+  // Forge: furnace set into the stone wall, anvil in front.
+  anvil_forge: (P, H, ctx) => [
+    ...solidBox(P, H, P.wall).map((b) => (b.u === 1 && b.v === 0 ? { ...b, block: `${ctx.pick(["furnace", "blast_furnace", "smoker"])}[facing=${ctx.inward}]` } : b.u === 1 && b.v >= 1 ? { ...b, block: P.wall3 } : b)),
+    { u: ctx.pick([0, 2]), v: 0, w: -1, block: `anvil[facing=${ctx.axis === "x" ? "north" : "east"}]` },
+  ],
+  // Lower planks wall with a fence crest and a gate.
+  fence_top: (P, H, ctx) => [
+    ...solidBox(P, H - 1, P.planks),
+    { u: 0, v: H - 1, w: 0, block: P.fence },
+    { u: 1, v: H - 1, w: 0, block: `${P.gate}[facing=${ctx.inward}]` },
+    { u: 2, v: H - 1, w: 0, block: P.fence },
+  ],
+  // Stone wall with closed trapdoors set in as vents.
+  trapdoor_vent: (P, H, ctx) => {
+    const v = ctx.pick([2, 3]);
+    return solidBox(P, H, P.wall).map((b) => (b.v === v && b.u !== 1 ? { ...b, block: `${P.trapdoor}[facing=${ctx.inward},half=top,open=false]` } : b));
+  },
+  // Door with a carpet doormat and a lantern post.
+  carpet_doormat: (P, H, ctx) => [
+    ...without(solidBox(P, H, P.wall2), (b) => b.u === 1 && b.v <= 1),
+    { u: 1, v: 0, w: 0, block: `${P.door}[facing=${ctx.inward},half=lower]` },
+    { u: 1, v: 1, w: 0, block: `${P.door}[facing=${ctx.inward},half=upper]` },
+    { u: 1, v: 0, w: -1, block: `${ctx.pick(CARPET_COLOURS)}_carpet` },
+    { u: ctx.pick([0, 2]), v: 0, w: -1, block: P.fence },
+    { u: 0, v: 1, w: -1, block: "lantern[hanging=false]" },
+  ],
+  // Portico: two protruding log pillars with a slab lintel.
+  portico: (P, H) => [
+    ...solidBox(P, H, P.wall),
+    ...[0, 2].flatMap((u) => Array.from({ length: H - 1 }, (_, v) => ({ u, v, w: -1, block: P.log }))),
+    ...[0, 1, 2].map((u) => ({ u, v: H - 1, w: -1, block: P.slab + "[type=bottom]" })),
+  ],
+  // Bell in a niche.
+  bell_niche: (P, H, ctx) => [
+    ...without(solidBox(P, H, P.wall, 0), (b) => b.u === 1 && (b.v === 2 || b.v === 3)).map((b) => (b.u !== 1 ? { ...b, block: ctx.rng() < 0.5 ? P.wall : P.wall2 } : b)),
+    ...solidBox(P, H, P.wall3, 1),
+    { u: 1, v: 2, w: 0, block: "bell[attachment=floor]" },
+  ],
+  // Planks wall with a diagonal of accent blocks.
+  accent_diagonal: (P, H, ctx) => {
+    const dir = ctx.pick([1, -1]);
+    return solidBox(P, H, P.planks).map((b) => ((b.u + dir * b.v) % 3 === 0 ? { ...b, block: P.accent } : b));
+  },
+  // Stone wall with a chiseled stone column and lanterns on top corners.
+  lantern_posts: (P, H, ctx) => [
+    ...solidBox(P, H, P.wall).map((b) => (b.u === ctx.pick([0, 1, 2]) && b.v > 0 && b.v < H - 1 ? { ...b, block: P.wall3 } : b)),
+    { u: 0, v: H, w: 0, block: P.fence },
+    { u: 2, v: H, w: 0, block: P.fence },
+    { u: 0, v: H + 1, w: 0, block: "lantern[hanging=false]" },
+    { u: 2, v: H + 1, w: 0, block: "lantern[hanging=false]" },
+  ],
+  // Woodshed: log ends (axis towards the yard) stacked in a planks frame.
+  woodshed: (P, H, ctx) => solidBox(P, H, P.planks).map((b) => (b.u === 1 || b.v === 0 || b.v === H - 1 ? b : { ...b, block: `${P.log}[axis=${ctx.axis === "x" ? "z" : "x"}]` })),
+  // Step-up: stairs climbing the wall face like a stoop.
+  stair_stoop: (P, H, ctx) => [
+    ...solidBox(P, H, P.wall2),
+    { u: 0, v: 0, w: -1, block: stairsIn(P, ctx, "bottom") },
+    { u: 1, v: 0, w: -1, block: P.wall2 },
+    { u: 2, v: 0, w: -1, block: stairsIn(P, ctx, "bottom") },
+    { u: 1, v: 1, w: -1, block: stairsIn(P, ctx, "bottom") },
   ],
 };
 
@@ -197,19 +469,20 @@ function buildCourtyardShape(rng) {
     }
   }
   let maxH = 0;
+  // Every module at most once per courtyard: one shuffled draw for all sides.
+  const order = shuffled(names, rng).slice(0, MODULES_PER_SIDE * Object.keys(SIDES).length);
+  let slot = 0;
   for (const [side, S] of Object.entries(SIDES)) {
-    const order = shuffled(names, rng).slice(0, MODULES_PER_SIDE);
     for (let k = 0; k < MODULES_PER_SIDE; k++) {
-      const name = order[k];
+      const name = order[slot++];
       const H = MODULE_HEIGHT_RANGE[0] + Math.floor(rng() * (MODULE_HEIGHT_RANGE[1] - MODULE_HEIGHT_RANGE[0] + 1));
-      maxH = Math.max(maxH, H);
-      const ctx = { inward: S.inward, outward: S.outward, axis: S.axis };
+      const ctx = { inward: S.inward, outward: S.outward, axis: S.axis, rng, pick: (arr) => arr[Math.floor(rng() * arr.length)] };
       const voxels = MODULES[name](P, H, ctx);
       layout.push({ side, index: k, module: name, height: H });
       for (const vx of voxels) {
-        const block = vx.mix ? (rng() < 0.3 ? P.wall2 : rng() < 0.15 ? P.wall3 : P.wall) : vx.block;
+        maxH = Math.max(maxH, vx.v + 1);
         const [dx, dz] = S.place(0, 0, k * MODULE_WIDTH + vx.u, vx.w);
-        push(dx, vx.v, dz, block, name, vx.w < 0 ? "protrusion" : "wall");
+        push(dx, vx.v, dz, vx.block, name, vx.w < 0 ? "protrusion" : "wall");
       }
     }
   }
@@ -786,7 +1059,7 @@ class SharedArenaEvalEpisode extends BaseEpisode {
 
   async setupEpisode(bot, rcon, sharedBotRng, coordinator, episodeNum, args, botPosition, otherBotPosition) {
     const seed = `sharedArenaEval_${SHARED_ARENA_BASE_SEED}_${args.instance_id ?? 0}_${episodeNum}`;
-    const sceneType = SCENE_TYPES[((args.instance_id ?? 0) + episodeNum) % SCENE_TYPES.length];
+    const sceneType = VILLAGE_ENABLED ? SCENE_TYPES[((args.instance_id ?? 0) + episodeNum) % SCENE_TYPES.length] : "courtyard";
     const isPrimary = decidePrimaryBot(bot, sharedBotRng, args);
     this._isPrimary = isPrimary;
     this._layout = null;

@@ -5,14 +5,16 @@ Shared-world-consistency eval episodes for the reconstruction-based scoring
 into that model, and the other way round). Two bots stand in a textured,
 non-repeating scene and sweep their yaw back and forth without moving.
 
-Version 2 (this README) has two scene types, assigned by
-(instance id + episode number) parity:
+Version 2 (this README) has two scene types:
 
-- **courtyard**: a square courtyard (15x15 inside) walled with seeded
-  player-style modules, built on a levelled spot before the recording.
-- **village**: a generated village found with `locate structure
+- **courtyard** (default, the only scene used from trial003 on): a square
+  courtyard (15x15 inside) walled with seeded player-style modules, built
+  on a levelled spot before the recording.
+- **village** (kept in the code, off by default since trial002: the eval
+  side could not use it): a generated village found with `locate structure
   #minecraft:village`, left untouched; standing spots chosen by ray
-  coverage.
+  coverage. When enabled the scene type alternates with (instance id +
+  episode number) parity.
 
 Version 1 (solaris-shared-arena-trial001) used a plain random-colour
 concrete enclosure; its problems (grey-level texture identical across
@@ -42,16 +44,31 @@ range inside the window; the realised range is in the quality manifest.
 
 ## Courtyard
 
-Thirteen wall modules, 3 wide, 4-6 tall, 1-2 thick (outwards), some
-protruding one block into the yard: stone wall with a window niche, timber
-frame, bookshelf wall, door with lanterns, fireplace niche, glazed band,
-eave of slabs, log pillar, mixed brick, arched alcove, log stack, terracotta
-panel, cobble base, buttress. Four material palettes (oak + stone bricks,
-spruce + deepslate, birch + sandstone, cherry + bricks/terracotta), one per
+Forty wall modules, 3 wide, 4-6 tall, 1-2 thick (outwards), many
+protruding one block into the yard: window niches (single, double,
+shuttered, potted sill, chest alcove, bell niche), timber frame, log stack,
+woodshed, bookshelf wall, reading corner with lectern, doors (with lanterns,
+with doormat and post), fireplace niche, forge with furnace and anvil,
+workbench row, barrel storage, glazed band / cross / diagonal / panel,
+eaves, corbels, portico, balcony with fence, battlements, fence crest with
+gate, ladder wall, banner wall, candle shelf, chain lamp, lantern posts,
+buttress, cobble base, mixed brick, stair stoop, trapdoor vents, hay stack.
+Every module has a seeded variant (window column and height, decoration
+present or not, banner / pot / carpet / station choice, band height, ...),
+and within one courtyard every module appears at most once (20 of the 40
+are drawn). Eleven material palettes (oak + stone bricks, spruce +
+deepslate, birch + sandstone, cherry + bricks, dark oak + blackstone,
+acacia + quartz, jungle + mud bricks, mangrove + tuff bricks, bamboo + waxed
+copper, crimson + nether bricks, warped + end stone bricks), one per
 episode; five modules per side with seeded heights, log corner pillars with
 lanterns, a floor mixing five textured blocks of the palette. No
-transparent, liquid, falling, burning or animated blocks (lanterns only, no
-torches). The levelled square is 21x21.
+transparent, liquid, falling, burning or animated blocks (lanterns and
+unlit candles only, no torches, glass, iron bars or weathering copper). The
+levelled square is 21x21.
+
+Earlier trials: trial001 used a random-colour concrete enclosure, trial002
+thirteen modules in four palettes (modules repeated within and across
+courtyards, which let frames of one courtyard register into another).
 
 ## Village
 
