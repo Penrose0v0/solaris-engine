@@ -56,9 +56,10 @@ torches). The levelled square is 21x21.
 ## Village
 
 The primary bot is spread within 8 blocks of the located village start and
-scans standable columns within 24 blocks (stride 2), highest standable
-level per column: a spot qualifies when at least 80% of the rays every
-15 deg of yaw at 0 / 8 / 16 deg pitch hit a full block within 12 blocks, at
+scans standable columns within 32 blocks (stride 2), highest standable
+level per column: a spot qualifies when at least 60% of the rays every
+15 deg of yaw at 0 / 8 / 16 deg pitch hit a full block within 12 blocks
+(80% left almost only terrain pockets), at
 least 40% of those hits are built material (planks, cobblestone, stripped
 logs, doors, fences, stairs, slabs, bells, hay, lanterns, paths, cut
 sandstone, terracotta, bricks, ...; ray coverage alone picks caves and

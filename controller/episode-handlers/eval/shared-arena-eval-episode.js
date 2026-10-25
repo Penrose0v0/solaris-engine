@@ -369,7 +369,7 @@ function planCourtyardPlacement(rng, centre) {
 // ---------------------------------------------------------------------------
 const VILLAGE_LOCATE = "#minecraft:village";
 const VILLAGE_LAND_RADIUS = 8;
-const VILLAGE_SPOT_RADIUS = 24;
+const VILLAGE_SPOT_RADIUS = 32;
 const VILLAGE_SPOT_STRIDE = 2;
 const VILLAGE_MAX_ATTEMPTS = 12;
 const VILLAGE_SETTLE_MS = 6000;
@@ -377,7 +377,11 @@ const VILLAGE_HOP_RANGE = 600;
 const RAY_STEP_DEG = 15;
 const RAY_PITCHES_DEG = [0, 8, 16];
 const RAY_MAX_DIST = 12;
-const RAY_MIN_COVERAGE = 0.8;
+// 0.8 (the original spec) left under 1% of the standable columns of a
+// village, nearly all of them terrain pockets (trial002 run 3: 4 of 5
+// village episodes found no pair in 12 villages); 0.6 together with the
+// built-material and open-sky rules below keeps street-side spots.
+const RAY_MIN_COVERAGE = 0.6;
 // Ray coverage alone prefers caves, overhangs and cliff pockets (trial002
 // run 1). A village spot must also be outdoors (sky light at the eye) and
 // most of what the rays hit must be built material, not terrain.
