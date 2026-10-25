@@ -54,9 +54,18 @@ eaves, corbels, portico, balcony with fence, battlements, fence crest with
 gate, ladder wall, banner wall, candle shelf, chain lamp, lantern posts,
 buttress, cobble base, mixed brick, stair stoop, trapdoor vents, hay stack.
 Every module has a seeded variant (window column and height, decoration
-present or not, banner / pot / carpet / station choice, band height, ...),
-and within one courtyard every module appears at most once (20 of the 40
-are drawn). Eleven material palettes (oak + stone bricks, spruce +
+present or not, banner / pot / carpet / station choice, band height, ...);
+the modules the eval side saw "island" registrations on in trial002
+(fireplace niche, arched alcove, terracotta panel, glazed band, pillar,
+bookshelf wall, buttress) vary their silhouette as well (hearth width and
+chimney style, alcove height and arch type and contents, panel layout and
+pattern, band rows and pattern, pillar material / cap / base, shelf frame
+and separators, buttress count / height / slope). Within one courtyard
+every module appears at most once (20 of the 40 are drawn) and look-alike
+families are capped: at most 3 small niches, 1 tall opening (fireplace /
+arched alcove / bell niche), 2 accent fields, 2 pillar-type modules, 3
+shelf-type modules, 1 bookshelf-type, 2 door-type, 3 log-wall-type, 2
+station-type modules. Eleven material palettes (oak + stone bricks, spruce +
 deepslate, birch + sandstone, cherry + bricks, dark oak + blackstone,
 acacia + quartz, jungle + mud bricks, mangrove + tuff bricks, bamboo + waxed
 copper, crimson + nether bricks, warped + end stone bricks), one per

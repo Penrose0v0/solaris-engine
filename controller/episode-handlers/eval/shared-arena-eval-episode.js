@@ -187,9 +187,20 @@ const MODULES = {
     }
     return out;
   },
-  // Planks frame with rows of bookshelves (some chiseled).
-  bookshelf: (P, H, ctx) => solidBox(P, H, P.planks).map((b) =>
-    b.v >= 1 && b.v <= H - 2 ? { ...b, block: ctx.rng() < 0.25 ? `chiseled_bookshelf[facing=${ctx.inward}]` : "bookshelf" } : b),
+  // Bookshelf wall: shelves between a frame of logs or planks, with planks
+  // separators every other row or a stone base; some shelves chiseled.
+  bookshelf: (P, H, ctx) => {
+    const frame = ctx.pick([P.log, P.planks, P.wall3]);
+    const separators = ctx.rng() < 0.5;
+    const base = ctx.rng() < 0.5;
+    const chiseled = ctx.pick([0, 0.25, 0.5]);
+    return solidBox(P, H, frame).map((b) => {
+      if (b.v === 0 && base) return { ...b, block: P.wall2 };
+      if (b.v === 0 || b.v === H - 1) return b;
+      if (separators && b.v % 2 === 0) return { ...b, block: P.planks };
+      return { ...b, block: ctx.rng() < chiseled ? `chiseled_bookshelf[facing=${ctx.inward}]` : "bookshelf" };
+    });
+  },
   // Planks wall with a door and lanterns (on top of the wall or beside the door).
   door_lanterns: (P, H, ctx) => {
     const onTop = ctx.rng() < 0.5;
@@ -203,62 +214,129 @@ const MODULES = {
           { u: 0, v: 1, w: -1, block: P.slab + "[type=top]" }, { u: 2, v: 1, w: -1, block: P.slab + "[type=top]" }]),
     ];
   },
-  // Fireplace niche with a chimney column of wall3 (or logs) above it.
+  // Fireplace: a hearth niche 1 or 2 wide and 1 or 2 high, a chimney that is
+  // a column, a tapering stack or a log flue, optional mantel slab, hearth
+  // step and a lantern in the hearth.
   fireplace_niche: (P, H, ctx) => {
-    const chimney = ctx.rng() < 0.5 ? P.wall3 : P.wall2;
-    return [
-      ...without(solidBox(P, H, P.wall, 0), (b) => b.u === 1 && b.v <= 1).map((b) => (b.u === 1 ? { ...b, block: chimney } : b)),
-      ...solidBox(P, H, P.wall2, 1),
-      { u: 1, v: 2, w: -1, block: P.slab + "[type=bottom]" },
-    ];
+    const wide = ctx.rng() < 0.4;
+    const us = wide ? ctx.pick([[0, 1], [1, 2]]) : [1];
+    const hv = ctx.pick([1, 2]);
+    const style = ctx.pick(["column", "taper", "flue"]);
+    const chimney = style === "flue" ? P.log : ctx.pick([P.wall3, P.wall2]);
+    const voxels = without(solidBox(P, H, P.wall, 0), (b) => us.includes(b.u) && b.v <= hv - 1).map((b) => {
+      if (!us.includes(b.u)) return style === "taper" && b.v >= H - 2 ? { ...b, block: chimney } : b;
+      return { ...b, block: chimney };
+    });
+    const out = [...voxels, ...solidBox(P, H, P.wall2, 1)];
+    if (ctx.rng() < 0.7) out.push(...us.map((u) => ({ u, v: hv, w: -1, block: P.slab + "[type=bottom]" })));
+    if (ctx.rng() < 0.5) out.push(...us.map((u) => ({ u, v: 0, w: -1, block: stairsIn(P, ctx, "bottom") })));
+    if (ctx.rng() < 0.5) out.push({ u: us[0], v: 0, w: 0, block: "lantern[hanging=false]" });
+    if (style === "taper") out.push({ u: 1, v: H, w: 0, block: P.wallblock });
+    return out;
   },
-  // Stone wall with a glazed terracotta band at a random height and single accents.
+  // Glazed band: one or two rows of terracotta, solid or alternating with
+  // the chiseled stone, or only at the sides; optional cornice.
   glazed_band: (P, H, ctx) => {
     const band = ctx.pick([1, 2, 3]);
-    return solidBox(P, H, P.wall).map((b) => (b.v === band || (b.u === 1 && (b.v === 0 || b.v === H - 1)) ? { ...b, block: P.accent } : b));
+    const rows = ctx.rng() < 0.4 ? [band, band + 1] : [band];
+    const pattern = ctx.pick(["solid", "alternate", "sides", "centre"]);
+    const out = solidBox(P, H, ctx.rng() < 0.5 ? P.wall : P.wall2).map((b) => {
+      if (!rows.includes(b.v) || b.v >= H - 1) return b;
+      if (pattern === "solid") return { ...b, block: P.accent };
+      if (pattern === "alternate") return { ...b, block: (b.u + b.v) % 2 === 0 ? P.accent : P.wall3 };
+      if (pattern === "sides") return b.u !== 1 ? { ...b, block: P.accent } : b;
+      return b.u === 1 ? { ...b, block: P.accent } : b;
+    });
+    if (ctx.rng() < 0.5) out.push(...[0, 1, 2].map((u) => ({ u, v: H - 1, w: -1, block: P.slab + "[type=top]" })));
+    return out;
   },
   // Stone wall with an eave of upper slabs protruding inwards under the top row.
   eave_slab: (P, H) => [
     ...solidBox(P, H, P.wall2),
     ...[0, 1, 2].map((u) => ({ u, v: H - 1, w: -1, block: P.slab + "[type=top]" })),
   ],
-  // Planks wall with a log pillar protruding inwards, capped with a slab.
+  // Pillar: a column protruding into the yard (log, chiseled stone or
+  // planks), full or shortened height, capped with a slab, stairs or a
+  // lantern, with or without a widened base.
   pillar_out: (P, H, ctx) => {
     const u = ctx.pick([0, 1, 2]);
-    return [
-      ...solidBox(P, H, P.planks),
-      ...Array.from({ length: H }, (_, v) => ({ u, v, w: -1, block: P.log })),
-      { u, v: H, w: -1, block: P.slab + "[type=bottom]" },
-    ];
+    const material = ctx.pick([P.log, P.wall3, P.planks]);
+    const cap = ctx.pick(["slab", "stairs", "lantern"]);
+    const top = cap === "lantern" ? H - 1 : H;
+    const out = [...solidBox(P, H, ctx.rng() < 0.5 ? P.planks : P.wall)];
+    for (let v = 0; v < top; v++) out.push({ u, v, w: -1, block: material });
+    if (cap === "slab") out.push({ u, v: H, w: -1, block: P.slab + "[type=bottom]" });
+    if (cap === "stairs") out.push({ u, v: H, w: -1, block: stairsIn(P, ctx, "bottom") });
+    if (cap === "lantern") out.push({ u, v: H - 1, w: -1, block: "lantern[hanging=false]" });
+    if (ctx.rng() < 0.5) {
+      for (const x of [u - 1, u + 1]) if (x >= 0 && x <= 2) out.push({ u: x, v: 0, w: -1, block: stairsIn(P, ctx, "bottom") });
+    }
+    return out;
   },
   // Stone wall mixing the stone variants (seeded noise).
   brick_mixed: (P, H, ctx) => solidBox(P, H, P.wall).map((b) => ({ ...b, block: ctx.rng() < 0.3 ? P.wall2 : ctx.rng() < 0.15 ? P.wall3 : P.wall })),
-  // Arched alcove: inner layer open 1x3 with a stair arch on top, outer solid.
+  // Arched alcove: an opening 2 or 3 high in the inner layer with a stair
+  // arch or a keystone on top, flanked or not by chiseled columns, empty or
+  // holding a lantern, a potted plant or a banner.
   arched_alcove: (P, H, ctx) => {
     const u = ctx.pick([0, 1, 2]);
-    return [
-      ...without(solidBox(P, H, P.wall, 0), (b) => b.u === u && b.v <= 2),
+    const hv = ctx.pick([2, 3]);
+    const arch = ctx.pick(["stairs", "keystone", "slab"]);
+    const flank = ctx.rng() < 0.5;
+    const out = [
+      ...without(solidBox(P, H, P.wall, 0), (b) => b.u === u && b.v < hv).map((b) => (flank && Math.abs(b.u - u) === 1 ? { ...b, block: P.wall3 } : b)),
       ...solidBox(P, H, P.wall2, 1),
-      ...[u - 1, u + 1].filter((x) => x >= 0 && x <= 2).map((x) => ({ u: x, v: 3, w: -1, block: stairsIn(P, ctx, "top") })),
     ];
+    if (arch === "stairs") out.push(...[u - 1, u + 1].filter((x) => x >= 0 && x <= 2).map((x) => ({ u: x, v: hv, w: -1, block: stairsIn(P, ctx, "top") })));
+    if (arch === "keystone" && hv < H) out[out.findIndex((b) => b.u === u && b.v === hv && b.w === 0)].block = P.wall3;
+    if (arch === "slab") out.push({ u, v: hv, w: -1, block: P.slab + "[type=top]" });
+    const content = ctx.pick(["empty", "lantern", "pot", "banner"]);
+    if (content === "lantern") out.push({ u, v: 0, w: 0, block: "lantern[hanging=false]" });
+    if (content === "pot") out.push({ u, v: 0, w: 0, block: P.slab + "[type=bottom]" }, { u, v: 1, w: 0, block: ctx.pick(POTTED_PLANTS) });
+    if (content === "banner") out.push({ u, v: hv - 1, w: 0, block: `${ctx.pick(BANNER_COLOURS)}_wall_banner[facing=${ctx.inward}]` });
+    return out;
   },
   // Horizontal logs along the wall alternating with planks rows.
   log_stack: (P, H, ctx) => {
     const phase = ctx.pick([0, 1]);
     return solidBox(P, H, P.planks).map((b) => (b.v % 2 === phase ? { ...b, block: `${P.log}[axis=${ctx.axis}]` } : b));
   },
-  // Glazed terracotta centre panel between log columns.
-  terracotta_panel: (P, H) => solidBox(P, H, P.log).map((b) => (b.u === 1 ? { ...b, block: b.v === 0 || b.v === H - 1 ? P.wall3 : P.accent } : b)),
+  // Terracotta panel: one centre panel, two side panels or a full field,
+  // solid, checkered with chiseled stone or striped, in a frame of logs,
+  // planks or stone.
+  terracotta_panel: (P, H, ctx) => {
+    const frame = ctx.pick([P.log, P.planks, P.wall]);
+    const layout = ctx.pick(["centre", "sides", "full"]);
+    const pattern = ctx.pick(["solid", "checker", "stripes"]);
+    const isPanel = (u) => (layout === "centre" ? u === 1 : layout === "sides" ? u !== 1 : true);
+    const out = solidBox(P, H, frame).map((b) => {
+      if (!isPanel(b.u) || b.v === 0 || b.v === H - 1) return b;
+      if (pattern === "solid") return { ...b, block: P.accent };
+      if (pattern === "checker") return { ...b, block: (b.u + b.v) % 2 === 0 ? P.accent : P.wall3 };
+      return { ...b, block: b.v % 2 === 1 ? P.accent : P.wall3 };
+    });
+    if (ctx.rng() < 0.5) out.push({ u: 1, v: H, w: 0, block: P.slab + "[type=bottom]" });
+    return out;
+  },
   // Rough stone base, planks above, log on top; base height varies.
   cobble_base: (P, H, ctx) => {
     const base = ctx.pick([1, 2]);
     return solidBox(P, H, P.planks).map((b) => (b.v <= base ? { ...b, block: P.wall2 } : b.v === H - 1 ? { ...b, block: `${P.log}[axis=${ctx.axis}]` } : b));
   },
-  // Buttressed stone: wall3 columns at the sides protruding inwards on the lower half.
-  buttress: (P, H) => [
-    ...solidBox(P, H, P.wall),
-    ...[0, 2].flatMap((u) => Array.from({ length: Math.ceil(H / 2) }, (_, v) => ({ u, v, w: -1, block: P.wall3 }))),
-  ],
+  // Buttresses: one centre or two side buttresses of chiseled stone, logs
+  // or the stone variant, half or two-thirds height, sloped with a stair
+  // on top or flat.
+  buttress: (P, H, ctx) => {
+    const us = ctx.pick([[0, 2], [1]]);
+    const material = ctx.pick([P.wall3, P.wall2, P.log]);
+    const h = ctx.pick([Math.ceil(H / 2), Math.ceil((2 * H) / 3)]);
+    const sloped = ctx.rng() < 0.6;
+    return [
+      ...solidBox(P, H, P.wall),
+      ...us.flatMap((u) => Array.from({ length: h }, (_, v) => ({ u, v, w: -1, block: material }))),
+      ...(sloped ? us.map((u) => ({ u, v: h, w: -1, block: stairsIn(P, ctx, "bottom") })) : []),
+    ];
+  },
   // Two small window niches with stair sills.
   double_window: (P, H, ctx) => {
     const v = ctx.pick([1, 2]);
@@ -436,6 +514,21 @@ const MODULES = {
   ],
 };
 
+// Families of look-alike modules (same opening or protrusion shape): a
+// courtyard holds at most `max` members of each family, so a sweep is not
+// registered onto a near-identical module elsewhere in the same yard.
+const SIMILAR_GROUPS = [
+  { name: "small_niches", max: 3, members: ["stone_window", "double_window", "shuttered_window", "potted_sill", "chest_alcove"] },
+  { name: "tall_openings", max: 1, members: ["fireplace_niche", "arched_alcove", "bell_niche"] },
+  { name: "accent_fields", max: 2, members: ["glazed_band", "accent_cross", "accent_diagonal", "terracotta_panel"] },
+  { name: "pillars", max: 2, members: ["pillar_out", "portico", "buttress", "lantern_posts"] },
+  { name: "shelves", max: 3, members: ["candle_shelf", "balcony", "eave_slab", "stair_corbels", "chain_lamp"] },
+  { name: "books", max: 1, members: ["bookshelf", "lectern_corner"] },
+  { name: "doors", max: 2, members: ["door_lanterns", "carpet_doormat", "fence_top"] },
+  { name: "log_walls", max: 3, members: ["log_stack", "woodshed", "hay_stack", "timber_frame", "cobble_base"] },
+  { name: "stations", max: 2, members: ["workbench_row", "anvil_forge", "barrel_storage"] },
+];
+
 // Side geometry: along-wall axis, outward normal and block-state names.
 const SIDES = {
   south: { axis: "x", inward: "north", outward: "south", place: (cx, cz, along, w) => [cx - INNER_HALF + along, cz + WALL_OFFSET + w] },
@@ -469,8 +562,23 @@ function buildCourtyardShape(rng) {
     }
   }
   let maxH = 0;
-  // Every module at most once per courtyard: one shuffled draw for all sides.
-  const order = shuffled(names, rng).slice(0, MODULES_PER_SIDE * Object.keys(SIDES).length);
+  // Every module at most once per courtyard, and at most SIMILAR_GROUPS[g].max
+  // of each family of look-alike modules: shuffled greedy draw for all sides.
+  const need = MODULES_PER_SIDE * Object.keys(SIDES).length;
+  const groupOf = new Map();
+  SIMILAR_GROUPS.forEach((g, i) => g.members.forEach((m) => groupOf.set(m, i)));
+  const used = SIMILAR_GROUPS.map(() => 0);
+  const order = [];
+  for (const name of shuffled(names, rng)) {
+    if (order.length >= need) break;
+    const g = groupOf.get(name);
+    if (g !== undefined) {
+      if (used[g] >= SIMILAR_GROUPS[g].max) continue;
+      used[g]++;
+    }
+    order.push(name);
+  }
+  if (order.length < need) throw new Error(`only ${order.length} modules selectable under SIMILAR_GROUPS, need ${need}`);
   let slot = 0;
   for (const [side, S] of Object.entries(SIDES)) {
     for (let k = 0; k < MODULES_PER_SIDE; k++) {
