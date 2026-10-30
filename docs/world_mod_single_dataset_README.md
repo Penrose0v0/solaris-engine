@@ -48,10 +48,11 @@ of the event. Per-frame `inventory.heldItem` / `inventory.offHandItem` /
 
 - `interaction`: place | break; `block`: the concrete; `target_cell`
   [x,y,z] block coordinates; `held_item`: the actor's main-hand item.
-- `event` (and `events` = [event] for the shared postprocess): `type`,
-  `block`, `pos`, `aim`, `actor`, `start_time_ms` / `end_time_ms`
-  (action sent / server confirmed), `frame_start` / `frame_end` (frame
-  indices of this recording), `server_block_before_ok`,
+- `events` = [the one event] (the shared postprocess fills `frame_start` /
+  `frame_end`, frame indices of this recording, into `events[0]`; `event`
+  is the same record as written by the controller, without the frame
+  indices): `type`, `block`, `pos`, `aim`, `actor`, `start_time_ms` /
+  `end_time_ms` (action sent / server confirmed), `server_block_before_ok`,
   `server_block_after_ok`, `client_block_after`, `world_changed`,
   `held_item` / `offhand_item` at the event and `_after` it, `los_clear`
   {bot: bool}.
