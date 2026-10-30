@@ -42,7 +42,7 @@ MIN_POST_FRAMES = 80
 
 def hand_check(info: dict, frames: list, win) -> dict:
     expected = info.get("held_item")
-    if not win:
+    if not win or win[0] is None or win[1] is None:
         return {"expected": expected, "ok": None}
     seg = frames[win[0]: win[1] + 1]
 
