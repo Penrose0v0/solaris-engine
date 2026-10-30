@@ -131,10 +131,13 @@ def main() -> int:
             ov_ = overlay_scan(wmq.Video(item[3]))
             in_win = lambda ks: [k for k in ks if win[0] is not None and win[0] <= k <= win[1]]  # noqa: E731
             rec[f"{side}_overlay"] = {"toast_frames": in_win(ov_["toast_frames"]), "chat_text_frames": in_win(ov_["chat_text_frames"])}
+            # The chat-text heuristic (yellow text band bottom left) fires on
+            # the yellow concrete swinging through that corner during the
+            # placement and on sunflowers (prod001: 4 false positives, no
+            # real chat; the cameras run with chat hidden), so it stays
+            # informational; the toast heuristic remains a reason.
             if rec[f"{side}_overlay"]["toast_frames"]:
                 rec["reasons"].append(f"{side}: toast suspected on {len(rec[f'{side}_overlay']['toast_frames'])} frames")
-            if rec[f"{side}_overlay"]["chat_text_frames"]:
-                rec["reasons"].append(f"{side}: chat text suspected on {len(rec[f'{side}_overlay']['chat_text_frames'])} frames")
         hc = hand_check(actor[1], actor[2], (actor[1].get("window_start_frame"), actor[1].get("window_end_frame")))
         rec["hand_check"] = hc
         if hc["ok"] is False:
