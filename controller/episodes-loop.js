@@ -89,6 +89,9 @@ const {
 const {
   SharedArenaEvalEpisode,
 } = require("./episode-handlers/eval/shared-arena-eval-episode");
+const {
+  WorldModSingleEvalEpisode,
+} = require("./episode-handlers/eval/world-mod-single-eval-episode");
 const turnToLookEvalTpPoints = require("./episode-handlers/eval/turn-to-look-eval-episode-tp-points.json");
 
 /**
@@ -128,6 +131,7 @@ const episodeClassMap = {
   worldModEval: WorldModEvalEpisode,
   coObserveEval: CoObserveEvalEpisode,
   sharedArenaEval: SharedArenaEvalEpisode,
+  worldModSingleEval: WorldModSingleEvalEpisode,
 };
 
 /**
@@ -152,6 +156,7 @@ const evalEpisodeClasses = [
   WorldModEvalEpisode,
   CoObserveEvalEpisode,
   SharedArenaEvalEpisode,
+  WorldModSingleEvalEpisode,
 ];
 
 /**
@@ -203,6 +208,7 @@ const defaultEpisodeTypes = [
   "worldModEval",
   "coObserveEval",
   "sharedArenaEval",
+  "worldModSingleEval",
 ];
 
 const isCustomEpisodeTypes =

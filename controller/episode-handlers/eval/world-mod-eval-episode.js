@@ -1056,4 +1056,39 @@ class WorldModEvalEpisode extends BaseEpisode {
   }
 }
 
-module.exports = { WorldModEvalEpisode };
+// Scene / event helpers shared with worldModSingleEval.
+const worldModUtils = {
+  pickScene,
+  chooseCells,
+  aimPointOf,
+  cellCentre,
+  cellVisibleFrom,
+  eyeOf,
+  anglesTo,
+  rconBlockIs,
+  rconWaitBlock,
+  rconSetBlock,
+  setInteractionRange,
+  quietNotificationsOnce,
+  rendezvous,
+  lookState,
+  lookExact,
+  withTimeout,
+  shuffled,
+  BLOCK_TYPES,
+  VIEW_ANGLE_BANDS_DEG,
+  WIDE_BAND_PROBABILITY,
+  HOLD_TICKS,
+  INTERACTION_RANGE,
+  MOB_CLEAR_RADIUS,
+  PATCH_HALF,
+  SCENE_MAX_ATTEMPTS,
+  SCENE_HOP_RANGE,
+  SCENE_HOP_MAX_RANGE,
+  SCENE_HOP_SETTLE_MS,
+  OBSERVER_CHUNK_SETTLE_MS,
+  EYE_HEIGHT,
+  DEG,
+};
+
+module.exports = { WorldModEvalEpisode, worldModUtils };
