@@ -353,7 +353,8 @@ def main() -> int:
             if montage(rec, actor, observer, boxes, path):
                 rec["montage"] = str(path.relative_to(args.root))
         records.append(rec)
-        print(f"episode {ep} instance {inst}: {rec['action']} dist {rec['observer_dist']:.1f} clean={rec['clean']} {rec['reasons']}")
+        dist = f"{rec['observer_dist']:.1f}" if rec.get("observer_dist") is not None else "n/a"
+        print(f"episode {ep} instance {inst}: {rec['action']} dist {dist} clean={rec['clean']} {rec['reasons']}")
 
     out = args.out or (args.root / "quality_manifest_actor_motion.json")
     out.write_text(json.dumps(records, indent=1))
