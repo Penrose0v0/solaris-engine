@@ -88,6 +88,7 @@ const {
 } = require("./episode-handlers/eval/co-observe-eval-episode");
 const {
   SharedArenaEvalEpisode,
+  SharedArenaChangeEvalEpisode,
 } = require("./episode-handlers/eval/shared-arena-eval-episode");
 const {
   WorldModSingleEvalEpisode,
@@ -134,6 +135,7 @@ const episodeClassMap = {
   worldModEval: WorldModEvalEpisode,
   coObserveEval: CoObserveEvalEpisode,
   sharedArenaEval: SharedArenaEvalEpisode,
+  sharedArenaChangeEval: SharedArenaChangeEvalEpisode,
   worldModSingleEval: WorldModSingleEvalEpisode,
   actorMotionEval: ActorMotionEvalEpisode,
 };
@@ -160,6 +162,7 @@ const evalEpisodeClasses = [
   WorldModEvalEpisode,
   CoObserveEvalEpisode,
   SharedArenaEvalEpisode,
+  SharedArenaChangeEvalEpisode,
   WorldModSingleEvalEpisode,
   ActorMotionEvalEpisode,
 ];
@@ -213,6 +216,7 @@ const defaultEpisodeTypes = [
   "worldModEval",
   "coObserveEval",
   "sharedArenaEval",
+  "sharedArenaChangeEval",
   "worldModSingleEval",
   "actorMotionEval",
 ];

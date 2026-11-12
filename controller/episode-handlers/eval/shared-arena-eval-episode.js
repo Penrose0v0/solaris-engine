@@ -672,7 +672,17 @@ function triangleOffsetDeg(travelled, sweepDeg) {
   return p - 2 * sweepDeg;
 }
 
-function lookAtTick(me, t) {
+// Motion time of window tick t: the sweep is frozen for hold_ticks from
+// hold_start_tick (change variant), so the look is constant there.
+function motionTick(me, t) {
+  if (!me.hold_ticks) return t;
+  if (t < me.hold_start_tick) return t;
+  if (t < me.hold_start_tick + me.hold_ticks) return me.hold_start_tick;
+  return t - me.hold_ticks;
+}
+
+function lookAtTick(me, tick) {
+  const t = motionTick(me, tick);
   const travelled = (me.omega_deg_per_sec / 20) * t;
   const yaw = me.yaw0 + me.direction * triangleOffsetDeg(travelled, me.sweep_deg) * DEG;
   const pitchDeg =
@@ -743,6 +753,305 @@ function planCourtyardPlacement(rng, centre) {
     return { posA, posB, yawA, yawB, hitA, hitB, dots, tries: tries + 1 };
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Change variant (sharedArenaChangeEval): one wall module is changed by a
+// single rcon `clone` in the middle of the window while both bots hold
+// their look on it.
+//   distort / swap_module  another module (not in this courtyard, other family)
+//   distort / recolour     the same module in another palette
+//   forget                 the module replaced by a flat one-colour wall
+// The replacement is pre-built in a sealed cavity TEMPLATE_DROP below the
+// module and cloned up, so the change lands in one server tick.
+// ---------------------------------------------------------------------------
+const CHANGE_KINDS = ["distort", "forget"];
+const DISTORT_SUBTYPES = ["swap_module", "recolour"];
+const HOLD_START_TICK_RANGE = [55, 75];
+const HOLD_PRE_TICKS = 15;
+const HOLD_POST_TICKS = 15;
+const CHANGE_TARGET_INDICES = [1, 2, 3]; // not the end modules: their protrusion cells overlap the next side
+const CHANGE_YAW_JITTER_DEG = 10;
+const CHANGE_MAX_INCIDENCE_DEG = 55;
+const CHANGE_TARGET_DISTANCE = [4, 13];
+const CHANGE_MIN_VISIBLE_FRACTION = 0.85;
+const CHANGE_FRAME_MARGIN = 0.9; // |ndc| limit for "inside the frame"
+const CHANGE_OTHER_BOT_CLEARANCE = 1.2;
+const RECOLOUR_MIN_PALETTE_FRACTION = 0.6;
+const CHANGE_MIN_CELL_FRACTION = 0.6;
+const CHANGE_SWAP_DRAWS = 30;
+const TEMPLATE_DROP = 24;
+const TAN_HALF_VFOV = Math.tan(35 * DEG);
+const ASPECT = 16 / 9;
+const PALETTE_KEYS = ["planks", "log", "wall", "wall2", "wall3", "slab", "stairs", "door", "trapdoor", "fence", "gate", "wallblock", "accent"];
+// Flat wall of the forget change: a concrete near the palette's wall tone.
+const PLAIN_BLOCKS = {
+  oak_stone: "light_gray_concrete", spruce_deepslate: "gray_concrete", birch_sandstone: "white_concrete",
+  cherry_terracotta: "brown_concrete", dark_oak_blackstone: "black_concrete", acacia_quartz: "white_concrete",
+  jungle_mud: "brown_concrete", mangrove_tuff: "gray_concrete", bamboo_copper: "orange_concrete",
+  crimson_nether: "red_concrete", warped_endstone: "yellow_concrete",
+};
+
+function changeSpecFor(instanceId, episodeNum) {
+  const kind = CHANGE_KINDS[(instanceId + episodeNum) % CHANGE_KINDS.length];
+  const subtype = kind === "distort" ? DISTORT_SUBTYPES[((episodeNum >> 1) + instanceId) % DISTORT_SUBTYPES.length] : "plain_wall";
+  return { kind, subtype };
+}
+
+// Offsets (relative to the centre column) of a module voxel.
+function moduleCell(side, index, vx) {
+  const [dx, dz] = SIDES[side].place(0, 0, index * MODULE_WIDTH + vx.u, vx.w);
+  return { dx, dy: vx.v, dz };
+}
+
+function dedupeVoxels(voxels) {
+  const seen = new Set();
+  return voxels.filter((b) => {
+    const k = `${b.u},${b.v},${b.w}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+function paletteFraction(blocks, P) {
+  const names = new Set(PALETTE_KEYS.map((k) => P[k]));
+  return blocks.length ? blocks.filter((b) => names.has(baseName(b.block))).length / blocks.length : 0;
+}
+
+// Fraction of the module's inner-face block centres inside the frame.
+function faceVisibleFraction(eye, yaw, pitch, points) {
+  const cp = Math.cos(pitch);
+  const f = [-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp];
+  const r = [Math.cos(yaw), 0, -Math.sin(yaw)];
+  const u = [Math.sin(yaw) * Math.sin(pitch), cp, Math.cos(yaw) * Math.sin(pitch)];
+  let inside = 0;
+  for (const p of points) {
+    const d = [p.x - eye.x, p.y - eye.y, p.z - eye.z];
+    const z = d[0] * f[0] + d[1] * f[1] + d[2] * f[2];
+    if (z <= 0.1) continue;
+    const nx = (d[0] * r[0] + d[2] * r[2]) / (z * TAN_HALF_VFOV * ASPECT);
+    const ny = (d[0] * u[0] + d[1] * u[1] + d[2] * u[2]) / (z * TAN_HALF_VFOV);
+    if (Math.abs(nx) <= CHANGE_FRAME_MARGIN && Math.abs(ny) <= CHANGE_FRAME_MARGIN) inside++;
+  }
+  return inside / points.length;
+}
+
+function pointSegmentDistance(p, a, b) {
+  const vx = b.x - a.x;
+  const vz = b.z - a.z;
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * vx + (p.z - a.z) * vz) / (vx * vx + vz * vz || 1)));
+  return Math.hypot(p.x - (a.x + vx * t), p.z - (a.z + vz * t));
+}
+
+function changeSweepPlan(rng, holdStart) {
+  const omegas = [];
+  for (let w = OMEGA_RANGE_DEG_PER_SEC[0]; w <= OMEGA_RANGE_DEG_PER_SEC[1]; w += OMEGA_QUANTUM_DEG_PER_SEC) {
+    const sweep = (w * holdStart) / 20;
+    if (sweep >= SWEEP_RANGE_DEG[0] && sweep <= SWEEP_RANGE_DEG[1]) omegas.push(w);
+  }
+  const plan = sweepPlan(rng);
+  // The triangle wave is back at yaw0 after travelling sweep_deg: choose the
+  // sweep so that happens exactly at the hold start.
+  plan.omega_deg_per_sec = omegas[Math.floor(rng() * omegas.length)];
+  plan.sweep_deg = (plan.omega_deg_per_sec * holdStart) / 20;
+  plan.hold_start_tick = holdStart;
+  plan.hold_ticks = HOLD_PRE_TICKS + HOLD_POST_TICKS;
+  return plan;
+}
+
+/**
+ * Placement for the change variant: a target module (middle three of a
+ * side) and two cells from which its inner face is seen at <=
+ * CHANGE_MAX_INCIDENCE_DEG, CHANGE_TARGET_DISTANCE away, not hidden by the
+ * other bot, with >= CHANGE_MIN_VISIBLE_FRACTION of the face inside both
+ * frames at the hold look (= yaw0 and the pitch at the hold start).
+ */
+function planChangePlacement(rng, centre, shape, spec) {
+  const lim = Math.floor(WALL_OFFSET - 0.5 - WALL_CLEARANCE);
+  const cell = () => ({ dx: Math.floor(uniform(rng, -lim, lim + 1)), dz: Math.floor(uniform(rng, -lim, lim + 1)) });
+  const P = PALETTES[shape.palette];
+  const candidates = shape.layout.filter((m) => {
+    if (!CHANGE_TARGET_INDICES.includes(m.index)) return false;
+    if (spec.subtype !== "recolour") return true;
+    return paletteFraction(shape.blocks.filter((b) => b.module === m.module), P) >= RECOLOUR_MIN_PALETTE_FRACTION;
+  });
+  if (!candidates.length) return null;
+  for (let tries = 0; tries < PLACEMENT_TRIES * 5; tries++) {
+    const a = cell();
+    const b = cell();
+    const d = Math.hypot(a.dx - b.dx, a.dz - b.dz);
+    if (d < BOT_DISTANCE[0] || d > BOT_DISTANCE[1]) continue;
+    const target = candidates[Math.floor(rng() * candidates.length)];
+    const c0 = moduleCell(target.side, target.index, { u: 1, v: 0, w: 0 });
+    const cIn = moduleCell(target.side, target.index, { u: 1, v: 0, w: -1 });
+    const inward = { x: cIn.dx - c0.dx, z: cIn.dz - c0.dz };
+    const facePoint = (u, v) => {
+      const c = moduleCell(target.side, target.index, { u, v: 0, w: 0 });
+      return { x: centre.x + c.dx + 0.5 * inward.x, y: centre.y + v + 0.5, z: centre.z + c.dz + 0.5 * inward.z };
+    };
+    const points = [];
+    for (let u = 0; u < MODULE_WIDTH; u++) for (let v = 0; v < target.height; v++) points.push(facePoint(u, v));
+    const mid = facePoint(1, target.height / 2 - 0.5);
+    const holdStart = Math.floor(uniform(rng, HOLD_START_TICK_RANGE[0], HOLD_START_TICK_RANGE[1] + 1));
+    const posA = { x: centre.x + a.dx, y: centre.y, z: centre.z + a.dz };
+    const posB = { x: centre.x + b.dx, y: centre.y, z: centre.z + b.dz };
+    const views = [];
+    let ok = true;
+    for (const [pos, other] of [[posA, posB], [posB, posA]]) {
+      const eye = eyeOf(pos);
+      const dist = Math.hypot(mid.x - eye.x, mid.z - eye.z);
+      const cosInc = -((mid.x - eye.x) * inward.x + (mid.z - eye.z) * inward.z) / dist;
+      if (dist < CHANGE_TARGET_DISTANCE[0] || dist > CHANGE_TARGET_DISTANCE[1] || cosInc < Math.cos(CHANGE_MAX_INCIDENCE_DEG * DEG) ||
+        pointSegmentDistance(other, eye, mid) < CHANGE_OTHER_BOT_CLEARANCE) {
+        ok = false;
+        break;
+      }
+      const yaw0 = wrapRad(yawTo(eye, mid) + uniform(rng, -CHANGE_YAW_JITTER_DEG, CHANGE_YAW_JITTER_DEG) * DEG);
+      const sweep = changeSweepPlan(rng, holdStart);
+      const hold = lookAtTick({ ...sweep, yaw0 }, holdStart);
+      const visible = faceVisibleFraction(eye, hold.yaw, hold.pitch, points);
+      if (visible < CHANGE_MIN_VISIBLE_FRACTION) {
+        ok = false;
+        break;
+      }
+      views.push({ yaw0, sweep, distance: dist, incidence_deg: Math.acos(Math.min(1, cosInc)) / DEG, visible_fraction_planned: visible,
+        hold_yaw: hold.yaw, hold_pitch: hold.pitch });
+    }
+    if (!ok) continue;
+    const dots = baselineDots(posA, posB, views[0].yaw0, views[1].yaw0);
+    if (dots.a > MAX_BASELINE_FORWARD_DOT || dots.b > MAX_BASELINE_FORWARD_DOT) continue;
+    const hitA = wallHit(centre, eyeOf(posA), views[0].yaw0);
+    const hitB = wallHit(centre, eyeOf(posB), views[1].yaw0);
+    if (!hitA || !hitB) continue;
+    return { posA, posB, yawA: views[0].yaw0, yawB: views[1].yaw0, hitA, hitB, dots, tries: tries + 1,
+      sweeps: [views[0].sweep, views[1].sweep], target, holdStart, views, face_centre: mid };
+  }
+  return null;
+}
+
+/**
+ * Voxels of the target module after the change ({u, v, w, block}) and the
+ * description of what replaced it.
+ */
+function changedModuleVoxels(rng, shape, target, spec) {
+  const S = SIDES[target.side];
+  const P = PALETTES[shape.palette];
+  const H = target.height;
+  if (spec.kind === "forget") {
+    const plain = PLAIN_BLOCKS[shape.palette];
+    return { voxels: solidBox(P, H, plain, 0), detail: { plain_block: plain } };
+  }
+  if (spec.subtype === "recolour") {
+    const others = Object.keys(PALETTES).filter((n) => n !== shape.palette);
+    const paletteAfter = others[Math.floor(rng() * others.length)];
+    const Q = PALETTES[paletteAfter];
+    const map = new Map(PALETTE_KEYS.map((k) => [P[k], Q[k]]));
+    return { recolour: map, detail: { palette_after: paletteAfter } };
+  }
+  const used = new Set(shape.layout.map((m) => m.module));
+  const family = SIMILAR_GROUPS.find((g) => g.members.includes(target.module));
+  const names = Object.keys(MODULES).filter((n) => !used.has(n) && !(family && family.members.includes(n)));
+  const moduleAfter = names[Math.floor(rng() * names.length)];
+  const ctx = { inward: S.inward, outward: S.outward, axis: S.axis, rng, pick: (arr) => arr[Math.floor(rng() * arr.length)] };
+  return { voxels: dedupeVoxels(MODULES[moduleAfter](P, H, ctx)), detail: { module_after: moduleAfter } };
+}
+
+/**
+ * Plan the change in world coordinates: the box of the module slot (3 along
+ * the wall, w -1..1, from the ground to the cleared height), its blocks
+ * before and after, and the template box TEMPLATE_DROP below.
+ */
+function planChange(rng, shape, placement, spec, cx, cy, cz) {
+  const target = placement.target;
+  const boxHeight = shape.max_height + 1;
+  const world = (c) => [cx + c.dx, cy + c.dy, cz + c.dz];
+  const before = shape.blocks
+    .filter((b) => b.module === target.module)
+    .map((b) => ({ x: cx + b.dx, y: cy + b.dy, z: cz + b.dz, block: b.block }));
+  const key = (b) => `${b.x},${b.y},${b.z}`;
+  const beforeMap = new Map(before.map((b) => [key(b), b.block]));
+  // A swap must change at least CHANGE_MIN_CELL_FRACTION of the face cells
+  // (some module pairs differ in a few blocks only): redraw the module.
+  let res;
+  let after;
+  let afterMap;
+  let changed = 0;
+  for (let draw = 0; draw < CHANGE_SWAP_DRAWS; draw++) {
+    res = changedModuleVoxels(rng, shape, target, spec);
+    if (res.recolour) {
+      after = before.map((b) => {
+        const to = res.recolour.get(baseName(b.block));
+        return to ? { ...b, block: to + b.block.slice(baseName(b.block).length) } : { ...b };
+      });
+    } else {
+      after = res.voxels.map((vx) => {
+        const [x, y, z] = world(moduleCell(target.side, target.index, vx));
+        return { x, y, z, block: vx.block };
+      });
+    }
+    afterMap = new Map(after.map((b) => [key(b), b.block]));
+    changed = 0;
+    for (const k of new Set([...beforeMap.keys(), ...afterMap.keys()])) if (beforeMap.get(k) !== afterMap.get(k)) changed++;
+    if (spec.subtype !== "swap_module" || changed >= CHANGE_MIN_CELL_FRACTION * MODULE_WIDTH * target.height) break;
+  }
+  const corners = [];
+  for (const u of [0, MODULE_WIDTH - 1]) for (const w of [-1, MAX_THICKNESS - 1]) corners.push(world(moduleCell(target.side, target.index, { u, v: 0, w })));
+  const boxMin = [Math.min(...corners.map((c) => c[0])), cy, Math.min(...corners.map((c) => c[2]))];
+  const boxMax = [Math.max(...corners.map((c) => c[0])), cy + boxHeight - 1, Math.max(...corners.map((c) => c[2]))];
+  const inBox = (b) => b.x >= boxMin[0] && b.x <= boxMax[0] && b.y >= boxMin[1] && b.y <= boxMax[1] && b.z >= boxMin[2] && b.z <= boxMax[2];
+  if (!before.every(inBox) || !after.every(inBox)) throw new Error("change voxels outside the module box");
+  const tick = placement.holdStart + HOLD_PRE_TICKS;
+  const tMin = [boxMin[0], boxMin[1] - TEMPLATE_DROP, boxMin[2]];
+  const tMax = [boxMax[0], boxMax[1] - TEMPLATE_DROP, boxMax[2]];
+  return {
+    type: spec.kind,
+    subtype: spec.subtype,
+    tick,
+    tick_reference: "window tick: 0 = window_start_frame; 20 ticks per second",
+    hold_start_tick: placement.holdStart,
+    hold_end_tick: placement.holdStart + HOLD_PRE_TICKS + HOLD_POST_TICKS,
+    side: target.side,
+    index: target.index,
+    module_before: target.module,
+    module_height: target.height,
+    palette_before: shape.palette,
+    ...res.detail,
+    box_min: boxMin,
+    box_max: boxMax,
+    box_note: "inclusive block coordinates; the whole box is replaced in one tick (cells in no list are air)",
+    face_centre: [placement.face_centre.x, placement.face_centre.y, placement.face_centre.z],
+    num_cells_changed: changed,
+    block_format: "[x, y, z, block state]",
+    blocks_before: before.map((b) => [b.x, b.y, b.z, b.block]),
+    blocks_after: after.map((b) => [b.x, b.y, b.z, b.block]),
+    views: { planned: placement.views.map((v) => ({ distance: v.distance, incidence_deg: v.incidence_deg, visible_fraction: v.visible_fraction_planned })) },
+    template_box: { min: tMin, max: tMax },
+    command: `clone ${tMin.join(" ")} ${tMax.join(" ")} ${boxMin.join(" ")}`,
+  };
+}
+
+// Build the replacement in a sealed cavity below the module.
+async function buildChangeTemplate(bot, rcon, change) {
+  const { min, max } = change.template_box;
+  if (min[1] - 1 < -60) {
+    console.log(`[${bot.username}] change template would be below the world (${min[1]}), giving up`);
+    return false;
+  }
+  await rconTry(bot, rcon, `fill ${min[0] - 1} ${min[1] - 1} ${min[2] - 1} ${max[0] + 1} ${max[1] + 1} ${max[2] + 1} minecraft:stone`);
+  await rconTry(bot, rcon, `fill ${min.join(" ")} ${max.join(" ")} minecraft:air`);
+  let bad = 0;
+  for (const [x, y, z, block] of change.blocks_after) {
+    const ty = y - TEMPLATE_DROP;
+    await rcon.send(`setblock ${x} ${ty} ${z} minecraft:${block}`);
+    const res = String(await rcon.send(`execute if block ${x} ${ty} ${z} minecraft:${baseName(block)}`));
+    if (!/passed/i.test(res)) {
+      bad++;
+      if (bad <= 5) console.log(`[${bot.username}] template block ${x} ${ty} ${z} ${block} -> ${res.trim()}`);
+    }
+  }
+  console.log(`[${bot.username}] change template: ${change.blocks_after.length} blocks, bad ${bad}; ${change.type}/${change.subtype} on ${change.side}[${change.index}] ${change.module_before} at tick ${change.tick}`);
+  return bad === 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1108,21 +1417,68 @@ function getOnSharedArenaPhaseFn(bot, rcon, sharedBotRng, coordinator, episodeNu
     const meta = episodeInstance._episodeMetadata;
     const trace = [];
     const start = bot.entity.position.clone();
+    // Change variant: the primary sends the clone at change.tick; each bot
+    // stamps the moment its own client receives the first block update
+    // inside the box.
+    const change = layout.change || null;
+    const exec = { seen_time_ms: null };
+    let windowOpen = false;
+    const onBlockUpdate = (oldBlock, newBlock) => {
+      if (!windowOpen || exec.seen_time_ms !== null) return;
+      const pos = (newBlock && newBlock.position) || (oldBlock && oldBlock.position);
+      if (!pos) return;
+      if (pos.x >= change.box_min[0] && pos.x <= change.box_max[0] && pos.y >= change.box_min[1] && pos.y <= change.box_max[1] &&
+        pos.z >= change.box_min[2] && pos.z <= change.box_max[2]) {
+        exec.seen_time_ms = Date.now();
+      }
+    };
+    if (change) bot.on("blockUpdate", onBlockUpdate);
     try {
       await bot.look(me.yaw0, me.pitch0, true);
       await bot.waitForTicks(LEAD_TICKS);
       await rendezvous(coordinator, "sharedArenaGo", episodeNum);
       meta.window_start_time_ms = Date.now();
+      windowOpen = true;
       for (let t = 0; t < MOTION_TICKS; t++) {
         const { yaw, pitch } = lookAtTick(me, t);
         await bot.look(yaw, pitch, true);
         trace.push({ t, time_ms: Date.now(), yaw: +yaw.toFixed(4), pitch: +pitch.toFixed(4) });
+        if (change && episodeInstance._isPrimary && t === change.tick) {
+          exec.executed_by = bot.username;
+          exec.sent_time_ms = Date.now();
+          try {
+            exec.response = String(await rcon.send(change.command)).trim();
+          } catch (err) {
+            exec.response = `error: ${err.message}`;
+          }
+          exec.ack_time_ms = Date.now();
+          exec.ok = /cloned/i.test(exec.response);
+          console.log(`[${bot.username}] change at tick ${t}: ${change.command} -> ${exec.response}`);
+        }
         await bot.waitForTicks(1);
       }
       meta.window_end_time_ms = Date.now();
       await bot.waitForTicks(TAIL_TICKS);
     } finally {
       stopAll(bot);
+      if (change) bot.removeListener("blockUpdate", onBlockUpdate);
+    }
+    if (change) {
+      // Client world against the planned box content after the change.
+      const expected = new Map(change.blocks_after.map(([x, y, z, block]) => [`${x},${y},${z}`, baseName(block)]));
+      let mismatch = 0;
+      for (let x = change.box_min[0]; x <= change.box_max[0]; x++) {
+        for (let y = change.box_min[1]; y <= change.box_max[1]; y++) {
+          for (let z = change.box_min[2]; z <= change.box_max[2]; z++) {
+            const b = bot.blockAt(new Vec3(x, y, z));
+            if (!b || b.name !== (expected.get(`${x},${y},${z}`) || "air")) mismatch++;
+          }
+        }
+      }
+      exec.client_cells_not_as_planned = mismatch;
+      exec.seen_tick = exec.seen_time_ms === null ? null : trace.filter((p) => p.time_ms <= exec.seen_time_ms).length - 1;
+      meta.change = { ...change, ...exec };
+      console.log(`[${bot.username}] change seen at window tick ${exec.seen_tick} (planned ${change.tick}), cells not as planned ${mismatch}`);
     }
     const end = bot.entity.position;
     meta.look_trace = trace;
@@ -1162,12 +1518,15 @@ function getOnSharedArenaPhaseFn(bot, rcon, sharedBotRng, coordinator, episodeNu
  */
 class SharedArenaEvalEpisode extends BaseEpisode {
   static WORKS_IN_NON_FLAT_WORLD = true;
+  static CHANGE_VARIANT = false;
   static INIT_MIN_BOTS_DISTANCE = 4;
   static INIT_MAX_BOTS_DISTANCE = 8;
 
   async setupEpisode(bot, rcon, sharedBotRng, coordinator, episodeNum, args, botPosition, otherBotPosition) {
-    const seed = `sharedArenaEval_${SHARED_ARENA_BASE_SEED}_${args.instance_id ?? 0}_${episodeNum}`;
-    const sceneType = VILLAGE_ENABLED ? SCENE_TYPES[((args.instance_id ?? 0) + episodeNum) % SCENE_TYPES.length] : "courtyard";
+    const changeVariant = this.constructor.CHANGE_VARIANT;
+    const seed = `${changeVariant ? "sharedArenaChangeEval" : "sharedArenaEval"}_${SHARED_ARENA_BASE_SEED}_${args.instance_id ?? 0}_${episodeNum}`;
+    this._changeSpec = changeVariant ? changeSpecFor(args.instance_id ?? 0, episodeNum) : null;
+    const sceneType = changeVariant ? "courtyard" : VILLAGE_ENABLED ? SCENE_TYPES[((args.instance_id ?? 0) + episodeNum) % SCENE_TYPES.length] : "courtyard";
     const isPrimary = decidePrimaryBot(bot, sharedBotRng, args);
     this._isPrimary = isPrimary;
     this._layout = null;
@@ -1183,6 +1542,11 @@ class SharedArenaEvalEpisode extends BaseEpisode {
       scene_check_passed: false,
     };
     this._evalMetadata = { bots_chosen: [bot.username, args.other_bot_name].sort(), primary: primaryName, scene_type: sceneType };
+    if (this._changeSpec) {
+      this._episodeMetadata.change_planned = this._changeSpec;
+      this._evalMetadata.change_type = this._changeSpec.kind;
+      this._evalMetadata.change_subtype = this._changeSpec.subtype;
+    }
 
     await quietNotificationsOnce(bot, rcon);
 
@@ -1217,8 +1581,12 @@ class SharedArenaEvalEpisode extends BaseEpisode {
       baseline_forward_dot_planned: layout.start_overlap.baseline_forward_dot,
       pos: me.pos,
       look_plan: { yaw0: me.yaw0, pitch0: me.pitch0, sweep_deg: me.sweep_deg, omega_deg_per_sec: me.omega_deg_per_sec,
-        direction: me.direction, pitch_amp_deg: me.pitch_amp_deg, pitch_period_s: me.pitch_period_s, pitch_phase: me.pitch_phase },
-      suggested_window: "window_start_frame .. window_end_frame (the 160-tick sweep); frames before it are the static lead",
+        direction: me.direction, pitch_amp_deg: me.pitch_amp_deg, pitch_period_s: me.pitch_period_s, pitch_phase: me.pitch_phase,
+        ...(me.hold_ticks ? { hold_start_tick: me.hold_start_tick, hold_ticks: me.hold_ticks } : {}) },
+      change: layout.change || null,
+      suggested_window: layout.change
+        ? "window_start_frame .. window_end_frame (160 ticks: sweep, a static hold on the changed module with the change in its middle, sweep); frames before it are the static lead"
+        : "window_start_frame .. window_end_frame (the 160-tick sweep); frames before it are the static lead",
       arena: layout.arena || null,
       terraform: layout.terraform || null,
       scene_search_attempts: layout.attempts,
@@ -1285,12 +1653,13 @@ class SharedArenaEvalEpisode extends BaseEpisode {
     terraformInfo.repair_rounds = await repairArena(bot, rcon, arena, terra.top_block, clearHeight);
     await sleep(500);
 
-    const placement = planCourtyardPlacement(rng, centre);
+    const spec = this._changeSpec;
+    const placement = spec ? planChangePlacement(rng, centre, shape, spec) : planCourtyardPlacement(rng, centre);
     if (!placement) {
       console.log(`[${bot.username}] no courtyard placement satisfies the constraints, giving up`);
       return null;
     }
-    const sweeps = [sweepPlan(rng), sweepPlan(rng)];
+    const sweeps = placement.sweeps || [sweepPlan(rng), sweepPlan(rng)];
     const names = [bot.username, args.other_bot_name];
     const bots = {};
     [[names[0], placement.posA, placement.yawA, sweeps[0], placement.hitA],
@@ -1303,7 +1672,7 @@ class SharedArenaEvalEpisode extends BaseEpisode {
       view_angle_deg: Math.acos(Math.max(-1, Math.min(1, dA.x * dB.x + dA.z * dB.z))) / DEG,
       wall_a: placement.hitA.wall,
       wall_b: placement.hitB.wall,
-      same_or_adjacent_wall: true,
+      same_or_adjacent_wall: wallsAdjacent(placement.hitA.wall, placement.hitB.wall),
       bot_distance: Math.hypot(placement.posA.x - placement.posB.x, placement.posA.z - placement.posB.z),
       baseline_forward_dot: placement.dots,
       placement_tries: placement.tries,
@@ -1334,6 +1703,13 @@ class SharedArenaEvalEpisode extends BaseEpisode {
     const build = await buildBlocks(bot, rcon, blocks, rng);
     this._episodeMetadata.build = build;
     if (!build.ok) return null;
+    let change = null;
+    if (spec) {
+      change = planChange(rng, shape, placement, spec, cx, centre.y, cz);
+      change.views.bots = [names[0], names[1]];
+      this._episodeMetadata.change = change;
+      if (!(await buildChangeTemplate(bot, rcon, change))) return null;
+    }
     await rconTry(bot, rcon, killCmd);
     await sleep(500);
 
@@ -1356,6 +1732,7 @@ class SharedArenaEvalEpisode extends BaseEpisode {
         blocks,
       },
       bots,
+      ...(change ? { change } : {}),
       start_overlap: startOverlap,
       attempts,
       hops,
@@ -1478,6 +1855,10 @@ class SharedArenaEvalEpisode extends BaseEpisode {
       try {
         await rcon.send(`fill ${c.box_min[0]} ${c.box_min[1] + 1} ${c.box_min[2]} ${c.box_max[0]} ${c.box_max[1]} ${c.box_max[2]} minecraft:air`);
         await rcon.send(`fill ${c.box_min[0]} ${c.box_min[1]} ${c.box_min[2]} ${c.box_max[0]} ${c.box_min[1]} ${c.box_max[2]} minecraft:${top}`);
+        if (this._layout.change) {
+          const t = this._layout.change.template_box;
+          await rcon.send(`fill ${t.min[0] - 1} ${t.min[1] - 1} ${t.min[2] - 1} ${t.max[0] + 1} ${t.max[1] + 1} ${t.max[2] + 1} minecraft:stone`);
+        }
       } catch (err) {
         console.log(`[${bot.username}] courtyard cleanup failed: ${err.message}`);
       }
@@ -1485,4 +1866,22 @@ class SharedArenaEvalEpisode extends BaseEpisode {
   }
 }
 
-module.exports = { SharedArenaEvalEpisode };
+/**
+ * sharedArenaChangeEval: the courtyard scene and yaw sweeps of
+ * sharedArenaEval, but one wall module changes in the middle of the window
+ * (one rcon clone) while both bots hold their look on it for
+ * HOLD_PRE_TICKS before and HOLD_POST_TICKS after. Change kind by
+ * (instance id + episode number) parity: distort (another module or
+ * another palette) / forget (flat one-colour wall). `change` in the
+ * episode info holds the tick, the box and the blocks before / after.
+ * @extends SharedArenaEvalEpisode
+ */
+class SharedArenaChangeEvalEpisode extends SharedArenaEvalEpisode {
+  static CHANGE_VARIANT = true;
+}
+
+module.exports = {
+  SharedArenaEvalEpisode,
+  SharedArenaChangeEvalEpisode,
+  _internals: { buildCourtyardShape, planChangePlacement, planChange, changeSpecFor, lookAtTick, faceVisibleFraction, PALETTES, MODULES },
+};

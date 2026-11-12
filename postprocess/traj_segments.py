@@ -55,6 +55,25 @@ def resolve_window_frames(info: dict, frames: list) -> bool:
     return True
 
 
+def resolve_change_frames(info: dict, frames: list) -> bool:
+    """sharedArenaChangeEval: fill change.frame (first frame rendered at or
+    after this bot's client received the block change) and the hold frames
+    change.hold_start_frame / change.hold_end_frame (from the window ticks).
+    Trajectory frames; the video can trail by a few frames (see the quality
+    manifest's video_change_frame). Returns True if ``info`` has a change."""
+    ch = info.get("change")
+    if not ch:
+        return False
+    t = ch.get("seen_time_ms")
+    after = [k for k, f in enumerate(frames) if t is not None and f["renderTime"] >= t]
+    ch["frame"] = after[0] if after else None
+    w0 = info.get("window_start_time_ms")
+    for name, tick in (("hold_start_frame", ch.get("hold_start_tick")), ("hold_end_frame", ch.get("hold_end_tick"))):
+        idx = [k for k, f in enumerate(frames) if w0 is not None and tick is not None and f["renderTime"] >= w0 + 50 * tick]
+        ch[name] = idx[0] if idx else None
+    return True
+
+
 def resolve_segment_frames(info: dict, frames: list) -> bool:
     """Fill start_frame/end_frame of every segment in ``info`` in place.
 
