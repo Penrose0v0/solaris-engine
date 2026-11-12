@@ -42,7 +42,8 @@ TYPE = "sharedArenaChangeEval"
 MIN_VISIBLE_FRACTION = 0.7
 SEARCH_BEFORE = 6     # frames before change.frame searched for the pixel change
 SEARCH_AFTER = 14
-STILL_MAX = 1.0       # mean abs grey difference outside the box for a "still" frame pair
+STILL_MAX = 3.0       # mean abs grey difference outside the box for a "still" frame pair (a sweep gives >> 3;
+                      # the change itself spills ~1 outside the box: light / shading of the neighbouring blocks)
 JUMP_MIN = 1.0        # mean abs grey difference inside the box at the change (the box is mostly sky / floor
 JUMP_RATIO = 5.0      # around a module seen from afar), and at least this many times the difference outside
 BEFORE_OFFSET = 3     # review frames: change - 3, change + 5
