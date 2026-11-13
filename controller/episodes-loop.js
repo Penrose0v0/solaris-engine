@@ -96,6 +96,9 @@ const {
 const {
   ActorMotionEvalEpisode,
 } = require("./episode-handlers/eval/actor-motion-eval-episode");
+const {
+  TrajRevisitEvalEpisode,
+} = require("./episode-handlers/eval/traj-revisit-eval-episode");
 const turnToLookEvalTpPoints = require("./episode-handlers/eval/turn-to-look-eval-episode-tp-points.json");
 
 /**
@@ -138,6 +141,7 @@ const episodeClassMap = {
   sharedArenaChangeEval: SharedArenaChangeEvalEpisode,
   worldModSingleEval: WorldModSingleEvalEpisode,
   actorMotionEval: ActorMotionEvalEpisode,
+  trajRevisitEval: TrajRevisitEvalEpisode,
 };
 
 /**
@@ -165,6 +169,7 @@ const evalEpisodeClasses = [
   SharedArenaChangeEvalEpisode,
   WorldModSingleEvalEpisode,
   ActorMotionEvalEpisode,
+  TrajRevisitEvalEpisode,
 ];
 
 /**
@@ -219,6 +224,7 @@ const defaultEpisodeTypes = [
   "sharedArenaChangeEval",
   "worldModSingleEval",
   "actorMotionEval",
+  "trajRevisitEval",
 ];
 
 const isCustomEpisodeTypes =

@@ -36,7 +36,8 @@ from pathlib import Path
 
 import cv2
 
-from traj_segments import (resolve_change_frames, resolve_event_frames, resolve_segment_frames,
+from traj_segments import (resolve_change_frames, resolve_event_frames, resolve_phase_frames,
+                           resolve_segment_frames,
                            resolve_window_frames)
 
 TIMESTAMP_PREFIX_RE = re.compile(r"^\d{8}_\d{6}_")
@@ -154,6 +155,7 @@ def main() -> int:
         frames_json = json.loads(actions_json.read_text())
         resolved = resolve_segment_frames(info, frames_json)  # trajSegmentsEval
         resolved = resolve_event_frames(info, frames_json) or resolved  # worldModEval
+        resolved = resolve_phase_frames(info, frames_json) or resolved  # trajRevisitEval
         resolved = resolve_window_frames(info, frames_json) or resolved  # coObserveEval
         resolved = resolve_change_frames(info, frames_json) or resolved  # sharedArenaChangeEval
         if resolved:

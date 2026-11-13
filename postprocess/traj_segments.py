@@ -91,3 +91,20 @@ def resolve_segment_frames(info: dict, frames: list) -> bool:
         seg["start_frame"] = idx[0] if idx else None
         seg["end_frame"] = idx[-1] if idx else None
     return True
+
+
+def resolve_phase_frames(info: dict, frames: list) -> bool:
+    """trajRevisitEval: fill start_frame/end_frame of every phase in ``info``
+    in place (same rule as segments: start_time_ms <= renderTime <
+    end_time_ms; a zero-length phase, e.g. the hold of the H=0 tier, gets
+    None). Returns True if ``info`` has phases."""
+    phases = info.get("phases")
+    if not phases:
+        return False
+    times = [f["renderTime"] for f in frames]
+    for ph in phases:
+        t0, t1 = ph.get("start_time_ms"), ph.get("end_time_ms")
+        idx = [k for k, t in enumerate(times) if t0 <= t < t1] if t0 is not None and t1 is not None else []
+        ph["start_frame"] = idx[0] if idx else None
+        ph["end_frame"] = idx[-1] if idx else None
+    return True

@@ -34,6 +34,7 @@ const episodeTypicalLengths = {
   sharedArenaChangeEval: 10,
   worldModSingleEval: 8,
   actorMotionEval: 8,
+  trajRevisitEval: 12,
 };
 
 /**
