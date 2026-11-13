@@ -1381,6 +1381,11 @@ async function buildBlocks(bot, rcon, blocks, rng) {
   return { ok: serverBad === 0 && missing === 0, setblock_not_changed: failed, server_sample_bad: serverBad, client_missing: missing };
 }
 
+// `tp` centres an integer x / z on its block (+0.5): always send a decimal.
+function tpCoord(v) {
+  return Number.isInteger(v) ? v.toFixed(1) : String(v);
+}
+
 async function rconTry(bot, rcon, cmd) {
   try {
     const res = String(await rcon.send(cmd)).trim();
@@ -1524,7 +1529,7 @@ class SharedArenaEvalEpisode extends BaseEpisode {
 
   async setupEpisode(bot, rcon, sharedBotRng, coordinator, episodeNum, args, botPosition, otherBotPosition) {
     const changeVariant = this.constructor.CHANGE_VARIANT;
-    const seed = `${changeVariant ? "sharedArenaChangeEval" : "sharedArenaEval"}_${SHARED_ARENA_BASE_SEED}_${args.instance_id ?? 0}_${episodeNum}`;
+    const seed = `${this.constructor.SEED_PREFIX || (changeVariant ? "sharedArenaChangeEval" : "sharedArenaEval")}_${SHARED_ARENA_BASE_SEED}_${args.instance_id ?? 0}_${episodeNum}`;
     this._changeSpec = changeVariant ? changeSpecFor(args.instance_id ?? 0, episodeNum) : null;
     const sceneType = changeVariant ? "courtyard" : VILLAGE_ENABLED ? SCENE_TYPES[((args.instance_id ?? 0) + episodeNum) % SCENE_TYPES.length] : "courtyard";
     const isPrimary = decidePrimaryBot(bot, sharedBotRng, args);
@@ -1626,6 +1631,12 @@ class SharedArenaEvalEpisode extends BaseEpisode {
   }
 
   // ---- courtyard -----------------------------------------------------------
+  // Standing cells, start yaws and per-bot look plans (`sweeps`, optional);
+  // subclasses override this to script their own placement.
+  planPlacement(rng, centre, shape, spec) {
+    return spec ? planChangePlacement(rng, centre, shape, spec) : planCourtyardPlacement(rng, centre);
+  }
+
   async courtyardSetup(bot, rcon, episodeNum, args, botPosition, rng) {
     const shape = buildCourtyardShape(rng);
     let scene = null;
@@ -1654,7 +1665,7 @@ class SharedArenaEvalEpisode extends BaseEpisode {
     await sleep(500);
 
     const spec = this._changeSpec;
-    const placement = spec ? planChangePlacement(rng, centre, shape, spec) : planCourtyardPlacement(rng, centre);
+    const placement = this.planPlacement(rng, centre, shape, spec);
     if (!placement) {
       console.log(`[${bot.username}] no courtyard placement satisfies the constraints, giving up`);
       return null;
@@ -1679,7 +1690,7 @@ class SharedArenaEvalEpisode extends BaseEpisode {
     };
 
     for (const b of Object.values(bots)) {
-      const res = await rcon.send(`tp ${b.name} ${b.pos[0]} ${b.pos[1]} ${b.pos[2]}`);
+      const res = await rcon.send(`tp ${b.name} ${tpCoord(b.pos[0])} ${b.pos[1]} ${tpCoord(b.pos[2])}`);
       console.log(`[${bot.username}] tp ${b.name} -> ${String(res).trim()}`);
     }
     await sleep(1500);
@@ -1883,5 +1894,6 @@ class SharedArenaChangeEvalEpisode extends SharedArenaEvalEpisode {
 module.exports = {
   SharedArenaEvalEpisode,
   SharedArenaChangeEvalEpisode,
+  sharedArenaUtils: { wallHit, viewDir, baselineDots, WALL_OFFSET, INNER_SIZE },
   _internals: { buildCourtyardShape, planChangePlacement, planChange, changeSpecFor, lookAtTick, faceVisibleFraction, PALETTES, MODULES },
 };
