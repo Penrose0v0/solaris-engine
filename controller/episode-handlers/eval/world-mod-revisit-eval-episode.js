@@ -89,6 +89,45 @@ const FAR_SPREAD_RADIUS = 16;
 const FAR_SETTLE_MS = 6000;
 const FAR_MAX_TRIES = 8;
 
+// Near occluders. A resting view (start pose, turned-out pose, B's two poses)
+// is rejected when more than NEAR_OCCLUDER_MAX_FRACTION of a grid of rays
+// over the frame ends on a solid block (tree trunk, leaves, a bank) within
+// NEAR_OCCLUDER_RANGE blocks. Blocks below the feet level (the ground the
+// bot stands on) do not count.
+const NEAR_OCCLUDER_RANGE = 6;
+const NEAR_OCCLUDER_MAX_FRACTION = 0.25;
+const NEAR_OCCLUDER_YAWS_DEG = [-48, -40, -32, -24, -16, -8, 0, 8, 16, 24, 32, 40, 48];
+const NEAR_OCCLUDER_PITCHES_DEG = [-30, -24, -18, -12, -6, 0, 6, 12, 18, 24, 30];
+
+function nearOccluderFraction(bot, pos, yaw) {
+  const eye = eyeOf(pos);
+  const floorY = Math.floor(pos.y);
+  let hits = 0;
+  for (const dyaw of NEAR_OCCLUDER_YAWS_DEG) {
+    for (const dpitch of NEAR_OCCLUDER_PITCHES_DEG) {
+      const ch = Math.cos(dpitch * DEG);
+      const dx = -Math.sin(yaw + dyaw * DEG) * ch;
+      const dy = Math.sin(dpitch * DEG);
+      const dz = -Math.cos(yaw + dyaw * DEG) * ch;
+      for (let t = 0.25; t <= NEAR_OCCLUDER_RANGE; t += 0.25) {
+        const y = eye.y + dy * t;
+        if (y < floorY) break; // into the ground
+        const block = blockAtXYZ(bot, eye.x + dx * t, y, eye.z + dz * t);
+        if (block === null) break;
+        if (block.boundingBox === "block") {
+          hits++;
+          break;
+        }
+      }
+    }
+  }
+  return hits / (NEAR_OCCLUDER_YAWS_DEG.length * NEAR_OCCLUDER_PITCHES_DEG.length);
+}
+
+function isViewOpen(bot, pos, yaw) {
+  return nearOccluderFraction(bot, pos, yaw) <= NEAR_OCCLUDER_MAX_FRACTION;
+}
+
 async function rconLog(bot, rcon, cmd) {
   try {
     const res = String(await rcon.send(cmd)).trim();
@@ -372,7 +411,7 @@ async function pickRevisitScene(bot, rng, signedThetaRad) {
   }
   columns.sort((a, b) => a.d2 - b.d2);
   const deadline = Date.now() + SCENE_SEARCH_BUDGET_MS;
-  const rejected = { spot: 0, column: 0, los: 0, view: 0, away_view: 0 };
+  const rejected = { spot: 0, column: 0, los: 0, view: 0, away_view: 0, near_occluder: 0 };
   let candidates = 0;
   for (const col of columns) {
     if (Date.now() > deadline) break;
@@ -408,7 +447,12 @@ async function pickRevisitScene(bot, rng, signedThetaRad) {
           rejected.away_view++;
           continue;
         }
-        return { pos, yaw, ev, dist: off.h, candidates };
+        const occluders = [nearOccluderFraction(bot, pos, yaw), nearOccluderFraction(bot, pos, yaw + signedThetaRad)];
+        if (Math.max(...occluders) > NEAR_OCCLUDER_MAX_FRACTION) {
+          rejected.near_occluder++;
+          continue;
+        }
+        return { pos, yaw, ev, dist: off.h, candidates, occluders };
       }
       break;
     }
@@ -588,6 +632,7 @@ class WorldModRevisitEvalEpisode extends BaseEpisode {
       pedestal_cell: ev.base_pos,
       pedestal_block: COLUMN_BASE_BLOCK,
       target_distance: scene.dist,
+      near_occluder_fraction: { start_view: scene.occluders[0], turned_out_view: scene.occluders[1], max_allowed: NEAR_OCCLUDER_MAX_FRACTION, range_blocks: NEAR_OCCLUDER_RANGE },
       held_item: hands.held_item,
       start_pos: [pos.x, pos.y, pos.z],
       start_yaw: scene.yaw,
@@ -620,6 +665,10 @@ class WorldModRevisitEvalEpisode extends BaseEpisode {
 
 const modScriptUtils = {
   rconLog,
+  nearOccluderFraction,
+  isViewOpen,
+  NEAR_OCCLUDER_MAX_FRACTION,
+  NEAR_OCCLUDER_RANGE,
   isSpotClear,
   columnOk,
   makeEvent,

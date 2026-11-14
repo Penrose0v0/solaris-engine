@@ -11,6 +11,11 @@ Natural worlds, daytime, weather cleared, mob spawning off and entities removed.
 - `worldModOffscreenEval/` — **DSP**, off-screen state propagation, two agents:
   A interacts while B looks away; after H frames B turns onto the target.
 
+Scene screening: a scene is only used when every resting view (EP: start and
+turned-out view; DSP: A's view, B's start and end view) is free of near
+occluders: at most 25% of a grid of rays over the frame may end on a solid
+block (trunk, leaves, a bank) within 6 blocks (`near_occluder_fraction`).
+
 ## Target
 
 Because the pitch stays 0, the target cell sits at eye level: a one-block

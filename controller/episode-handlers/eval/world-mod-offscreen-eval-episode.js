@@ -25,6 +25,10 @@ const {
 } = worldModUtils;
 const {
   rconLog,
+  nearOccluderFraction,
+  isViewOpen,
+  NEAR_OCCLUDER_MAX_FRACTION,
+  NEAR_OCCLUDER_RANGE,
   isSpotClear,
   columnOk,
   makeEvent,
@@ -139,7 +143,7 @@ async function pickOffscreenScene(bot, rng, sign) {
   }
   columns.sort((a, b) => a.d2 - b.d2);
   const deadline = Date.now() + SCENE_SEARCH_BUDGET_MS;
-  const rejected = { column: 0, actor: 0, observer: 0 };
+  const rejected = { column: 0, actor: 0, observer: 0, near_occluder: 0 };
   let candidates = 0;
   const spotOk = (p) => isStandable(bot, p.x, p.y, p.z) && isSpotClear(bot, p, 1);
   for (const col of columns) {
@@ -157,7 +161,7 @@ async function pickOffscreenScene(bot, rng, sign) {
       for (const a of shuffled(ACTOR_OFFSETS, rng)) {
         const posA = new Vec3(tx - a.dx + 0.5, y, tz - a.dz + 0.5);
         const yawA = yawTo(posA, ev);
-        if (!spotOk(posA) || !targetVisibleFrom(bot, posA, ev) || !isViewGood(bot, posA, yawA)) {
+        if (!spotOk(posA) || !targetVisibleFrom(bot, posA, ev) || !isViewGood(bot, posA, yawA) || !isViewOpen(bot, posA, yawA)) {
           rejected.actor++;
           continue;
         }
@@ -175,6 +179,17 @@ async function pickOffscreenScene(bot, rng, sign) {
           const yawB0 = (yawT - sign * B_TURN_DEG) * DEG;
           if (!spotOk(posB) || !targetVisibleFrom(bot, posB, ev)) continue;
           if (!isViewGood(bot, posB, yawB0) || !isViewGood(bot, posB, yawT * DEG)) continue;
+          const occluders = {
+            a_view: nearOccluderFraction(bot, posA, yawA),
+            b_start_view: nearOccluderFraction(bot, posB, yawB0),
+            b_end_view: nearOccluderFraction(bot, posB, yawT * DEG),
+            max_allowed: NEAR_OCCLUDER_MAX_FRACTION,
+            range_blocks: NEAR_OCCLUDER_RANGE,
+          };
+          if (Math.max(occluders.b_start_view, occluders.b_end_view) > NEAR_OCCLUDER_MAX_FRACTION) {
+            rejected.near_occluder++;
+            continue;
+          }
           return {
             ev,
             posA,
@@ -187,6 +202,7 @@ async function pickOffscreenScene(bot, rng, sign) {
             botDistance: sep,
             alphaDeg: alpha,
             betaDeg: beta,
+            occluders,
             candidates,
           };
         }
@@ -377,6 +393,7 @@ class WorldModOffscreenEvalEpisode extends BaseEpisode {
       pedestal_cell: ev.base_pos,
       pedestal_block: COLUMN_BASE_BLOCK,
       held_item: isActor ? layout.held_item : null,
+      near_occluder_fraction: layout.occluders,
       actor_held_item: layout.held_item,
       layout: {
         a_pos: layout.posA,
@@ -460,6 +477,7 @@ class WorldModOffscreenEvalEpisode extends BaseEpisode {
       botDistance: scene.botDistance,
       alphaDeg: scene.alphaDeg,
       betaDeg: scene.betaDeg,
+      occluders: scene.occluders,
       attempts,
       held_item: hands.held_item,
     };
