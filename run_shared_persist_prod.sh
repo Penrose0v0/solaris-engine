@@ -60,6 +60,9 @@ conda activate SolarisEngine
 cd "$(dirname "$0")"
 
 TYPE=sharedPersistEval
+# Own compose project prefix, ports and X displays: this collection can run
+# next to another one that uses the default "docker-compose-" projects.
+export SOLARIS_COMPOSE_PREFIX=spersist
 PY_POST=.venv-postprocess/bin/python
 EPISODES_PER_BATCH=$((INSTANCES * EPISODES_PER_INSTANCE))
 
@@ -117,12 +120,15 @@ while :; do
   echo "batch $batch: episodes $START_ID..$((START_ID + INSTANCES * per_instance - 1)) -> $BATCH_DIR  ($(date -Is))"
   echo "=========================================="
 
-  docker ps -q --filter "name=docker-compose-" | xargs -r docker rm -f >/dev/null 2>&1
+  docker ps -aq --filter "name=${SOLARIS_COMPOSE_PREFIX}-" | xargs -r docker rm -f >/dev/null 2>&1
 
   python3 generate_compose.py \
       --compose_dir "$COMPOSE_DIR" \
-      --base_port 26590 --base_rcon_port 26600 \
-      --act_recorder_port 9110 --coord_port 9120 \
+      --base_port 26690 --base_rcon_port 26700 \
+      --act_recorder_port 9130 --coord_port 9140 \
+      --display_base 299 \
+      --camera_alpha_vnc_base 5951 --camera_alpha_novnc_base 6951 \
+      --camera_bravo_vnc_base 5952 --camera_bravo_novnc_base 6952 \
       --data_dir "$BATCH_DIR/data" \
       --output_dir "$BATCH_DIR/output" \
       --camera_output_alpha_base "$BATCH_DIR/camera/output_alpha" \

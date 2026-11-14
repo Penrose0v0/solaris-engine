@@ -19,6 +19,14 @@ from typing import Dict, List, Optional, Set
 import yaml
 
 
+def project_name(stem: str) -> str:
+    """Compose project of a compose file. SOLARIS_COMPOSE_PREFIX replaces the
+    default "docker-compose" prefix (docker-compose-000 -> <prefix>-000) so a
+    second collection can run next to another one on the same host (it also
+    needs its own ports and displays, see generate_compose.py)."""
+    prefix = os.environ.get("SOLARIS_COMPOSE_PREFIX")
+    return stem.replace("docker-compose", prefix, 1) if prefix else stem
+
 class LogManager:
     def __init__(self, base_dir: Path, compose_bin: Optional[List[str]] = None):
         self.base_dir = base_dir
@@ -126,7 +134,7 @@ class InstanceManager:
 
     def build_instance(self, compose_file):
         """Build Docker images for a single instance."""
-        instance_name = compose_file.stem
+        instance_name = project_name(compose_file.stem)
         print(f"Building images for: {instance_name}")
 
         try:
@@ -155,7 +163,7 @@ class InstanceManager:
 
     def start_instance(self, compose_file):
         """Start a single Docker Compose instance."""
-        instance_name = compose_file.stem
+        instance_name = project_name(compose_file.stem)
 
         # Build images if requested
         if self.build_images:
@@ -201,7 +209,7 @@ class InstanceManager:
 
     def stop_instance(self, compose_file):
         """Stop a single Docker Compose instance."""
-        instance_name = compose_file.stem
+        instance_name = project_name(compose_file.stem)
         print(f"Stopping instance: {instance_name}")
 
         try:
@@ -360,7 +368,7 @@ class InstanceManager:
 
         running_count = 0
         for compose_file in compose_files:
-            instance_name = compose_file.stem
+            instance_name = project_name(compose_file.stem)
             try:
                 cmd = [
                     "docker",
@@ -439,7 +447,7 @@ class InstanceManager:
                 cmd = [
                     *self.compose_bin,
                     "-p",
-                    compose_file.stem,
+                    project_name(compose_file.stem),
                     "-f",
                     str(compose_file),
                     "logs",

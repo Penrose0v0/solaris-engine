@@ -99,3 +99,13 @@ one record per recording with `clean`, `episode_clean` (both recordings clean),
 `reasons`, `cell` (group / G / order) and the measured values. Review images
 (rows A / B; columns static_pre, first_observe, gap, second_observe) are in
 `cross_revisit_review/`.
+
+## Note on the recording code
+
+After prod001 was recorded (commit 8bef479) the episode script was split into
+overridable hooks (`makeSpec`, `windowSteps`, `yawOffsetDeg`,
+`describeEpisode`) so that sharedPersistEval can reuse it (commit fc2f723).
+The behaviour of crossRevisitEval is meant to be unchanged, but it has not
+been re-recorded since: before recording crossRevisitEval again, run
+`run_cross_revisit_trial.sh` once and confirm with
+`postprocess/cross_revisit_quality.py` that all 8 variants are still clean.
