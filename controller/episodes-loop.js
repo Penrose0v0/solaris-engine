@@ -102,6 +102,12 @@ const {
 const {
   CrossRevisitEvalEpisode,
 } = require("./episode-handlers/eval/cross-revisit-eval-episode");
+const {
+  WorldModRevisitEvalEpisode,
+} = require("./episode-handlers/eval/world-mod-revisit-eval-episode");
+const {
+  WorldModOffscreenEvalEpisode,
+} = require("./episode-handlers/eval/world-mod-offscreen-eval-episode");
 const turnToLookEvalTpPoints = require("./episode-handlers/eval/turn-to-look-eval-episode-tp-points.json");
 
 /**
@@ -146,6 +152,8 @@ const episodeClassMap = {
   actorMotionEval: ActorMotionEvalEpisode,
   trajRevisitEval: TrajRevisitEvalEpisode,
   crossRevisitEval: CrossRevisitEvalEpisode,
+  worldModRevisitEval: WorldModRevisitEvalEpisode,
+  worldModOffscreenEval: WorldModOffscreenEvalEpisode,
 };
 
 /**
@@ -175,6 +183,8 @@ const evalEpisodeClasses = [
   ActorMotionEvalEpisode,
   TrajRevisitEvalEpisode,
   CrossRevisitEvalEpisode,
+  WorldModRevisitEvalEpisode,
+  WorldModOffscreenEvalEpisode,
 ];
 
 /**
@@ -231,6 +241,8 @@ const defaultEpisodeTypes = [
   "actorMotionEval",
   "trajRevisitEval",
   "crossRevisitEval",
+  "worldModRevisitEval",
+  "worldModOffscreenEval",
 ];
 
 const isCustomEpisodeTypes =
