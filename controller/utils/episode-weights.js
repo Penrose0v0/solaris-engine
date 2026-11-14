@@ -36,6 +36,7 @@ const episodeTypicalLengths = {
   actorMotionEval: 8,
   trajRevisitEval: 12,
   crossRevisitEval: 10,
+  sharedPersistEval: 8,
   worldModRevisitEval: 16,
   worldModOffscreenEval: 12,
 };

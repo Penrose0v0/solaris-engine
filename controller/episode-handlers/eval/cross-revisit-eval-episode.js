@@ -125,8 +125,7 @@ function getOnCrossRevisitPhaseFn(bot, rcon, sharedBotRng, coordinator, episodeN
     const me = layout.bots[bot.username];
     const meta = episodeInstance._episodeMetadata;
     const isFirst = me.agent === spec.first_observer_agent;
-    const sign = me.agent === "A" ? 1 : -1; // A turns left (yaw grows), B right
-    const windowSteps = STATIC_PRE_FRAMES + 3 * TURN_FRAMES + 2 * OBSERVE_FRAMES + spec.gap_frames;
+    const windowSteps = episodeInstance.windowSteps(spec);
     const trace = [];
     const start = bot.entity.position.clone();
     const original = bot.getLastCameraAction;
@@ -174,12 +173,13 @@ function getOnCrossRevisitPhaseFn(bot, rcon, sharedBotRng, coordinator, episodeN
           if (anchor !== null) {
             const s = step;
             if (s < windowSteps + TAIL_FRAMES) {
-              const deg = turnedDeg(spec, isFirst, Math.min(s, windowSteps - 1));
+              // signed yaw offset from the start yaw (left = positive)
+              const deg = episodeInstance.yawOffsetDeg(spec, me, Math.min(s, windowSteps - 1));
               if (deg !== lastDeg) {
                 lastDeg = deg;
-                bot.look(me.yaw0 + sign * deg * DEG, 0, true).catch(() => {});
+                bot.look(me.yaw0 + deg * DEG, 0, true).catch(() => {});
               }
-              trace.push([now, s, deg]);
+              trace.push([now, s, Math.abs(deg)]);
             } else {
               finish();
             }
@@ -200,7 +200,7 @@ function getOnCrossRevisitPhaseFn(bot, rcon, sharedBotRng, coordinator, episodeN
       meta.window_start_time_ms = anchor;
       meta.window_end_time_ms = inWindow.length ? inWindow[inWindow.length - 1][0] + FRAME_MS / 2 : null;
       meta.frame_trace = trace;
-      meta.frame_trace_format = "[hook time ms (the frame's renderTime is 0-2 ms later), script step, degrees turned towards north]";
+      meta.frame_trace_format = "[hook time ms (the frame's renderTime is 0-2 ms later), script step, degrees turned away from the start yaw]";
       meta.hook_timed_out = how === "timeout";
       const end = bot.entity.position;
       meta.drift_blocks = Math.hypot(end.x - start.x, end.y - start.y, end.z - start.z);
@@ -208,7 +208,7 @@ function getOnCrossRevisitPhaseFn(bot, rcon, sharedBotRng, coordinator, episodeN
       const skipped = steps.slice(1).filter((s, i) => s - steps[i] !== 1).length;
       console.log(
         `[${bot.username}] cross revisit done: agent ${me.agent} (${isFirst ? "first" : "second"} observer), G ${spec.gap_frames}, ` +
-          `control ${spec.is_control}, ${inWindow.length}/${windowSteps} window frames, irregular steps ${skipped}, drift ${meta.drift_blocks.toFixed(4)}`,
+          `control ${!!spec.is_control}, ${inWindow.length}/${windowSteps} window frames, irregular steps ${skipped}, drift ${meta.drift_blocks.toFixed(4)}`,
       );
     } finally {
       bot.getLastCameraAction = original;
@@ -236,6 +236,43 @@ function getOnCrossRevisitPhaseFn(bot, rcon, sharedBotRng, coordinator, episodeN
 class CrossRevisitEvalEpisode extends SharedArenaEvalEpisode {
   static SEED_PREFIX = "crossRevisitEval";
 
+  // ---- script hooks (overridden by sharedPersistEval) ----------------------
+  makeSpec(instanceId, episodeNum) {
+    return crossRevisitSpec(instanceId, episodeNum);
+  }
+
+  windowSteps(spec) {
+    return STATIC_PRE_FRAMES + 3 * TURN_FRAMES + 2 * OBSERVE_FRAMES + spec.gap_frames;
+  }
+
+  // Signed yaw offset (deg, left positive) from the start yaw at script step s.
+  yawOffsetDeg(spec, me, s) {
+    const sign = me.agent === "A" ? 1 : -1; // A turns left (yaw grows), B right
+    return sign * turnedDeg(spec, me.agent === spec.first_observer_agent, s);
+  }
+
+  // What counts as x: the north wall of the courtyard.
+  describeX(layout) {
+    const cz = layout.centre.z;
+    const cx = layout.centre.x;
+    return {
+      what: "north wall: the five modules of side 'north' (blocks of courtyard.blocks whose module is one of them)",
+      inner_face_z: cz - (WALL_OFFSET - 0.5),
+      x_range: [cx - (WALL_OFFSET - 0.5), cx + (WALL_OFFSET - 0.5)],
+      modules: layout.courtyard.modules.filter((m) => m.side === "north"),
+    };
+  }
+
+  // Start positions: A west, B east on an east-west line south of the centre.
+  planPositions(rng, centre) {
+    const d = BOT_DISTANCES[Math.floor(rng() * BOT_DISTANCES.length)];
+    const south = SOUTH_OFFSETS[Math.floor(rng() * SOUTH_OFFSETS.length)];
+    return {
+      posA: { x: centre.x - d / 2, y: centre.y, z: centre.z + south },
+      posB: { x: centre.x + d / 2, y: centre.y, z: centre.z + south },
+    };
+  }
+
   planPlacement(rng, centre) {
     const d = BOT_DISTANCES[Math.floor(rng() * BOT_DISTANCES.length)];
     const south = SOUTH_OFFSETS[Math.floor(rng() * SOUTH_OFFSETS.length)];
@@ -260,7 +297,7 @@ class CrossRevisitEvalEpisode extends SharedArenaEvalEpisode {
   }
 
   async setupEpisode(bot, rcon, sharedBotRng, coordinator, episodeNum, args, botPosition, otherBotPosition) {
-    const spec = crossRevisitSpec(args.instance_id ?? 0, episodeNum);
+    const spec = this.makeSpec(args.instance_id ?? 0, episodeNum);
     this._crossSpec = spec;
     const out = await super.setupEpisode(bot, rcon, sharedBotRng, coordinator, episodeNum, args, botPosition, otherBotPosition);
     const layout = this._layout;
@@ -269,10 +306,17 @@ class CrossRevisitEvalEpisode extends SharedArenaEvalEpisode {
     delete meta.motion_ticks;
     delete meta.tail_ticks;
     meta.tail_frames = TAIL_FRAMES;
-    Object.assign(this._evalMetadata, { gap_frames: spec.gap_frames, is_control: spec.is_control });
+    Object.assign(this._evalMetadata, { gap_frames: spec.gap_frames, first_observer_agent: spec.first_observer_agent });
+    if (spec.is_control !== undefined) this._evalMetadata.is_control = spec.is_control;
+    delete meta.look_plan;
+    this.describeEpisode(bot, spec, layout, meta);
+    return out;
+  }
+
+  describeEpisode(bot, spec, layout, meta) {
     if (!layout) {
       meta.cross_revisit_planned = spec;
-      return out;
+      return;
     }
     const agents = {};
     for (const b of Object.values(layout.bots)) agents[b.agent] = b.name;
@@ -280,8 +324,6 @@ class CrossRevisitEvalEpisode extends SharedArenaEvalEpisode {
     const second = first === "A" ? "B" : "A";
     const me = layout.bots[bot.username];
     const cz = layout.centre.z;
-    const cx = layout.centre.x;
-    delete meta.look_plan;
     Object.assign(meta, {
       agent: me.agent,
       observer_role: me.agent === first ? "first" : "second",
@@ -299,20 +341,14 @@ class CrossRevisitEvalEpisode extends SharedArenaEvalEpisode {
         partner_offset_deg: PARTNER_OFFSET_DEG,
         bot_distance: layout.start_overlap.bot_distance,
         north_wall_distance: WALL_OFFSET - 0.5 + (me.pos[2] - cz),
-        x: {
-          what: "north wall: the five modules of side 'north' (blocks of courtyard.blocks whose module is one of them)",
-          inner_face_z: cz - (WALL_OFFSET - 0.5),
-          x_range: [cx - (WALL_OFFSET - 0.5), cx + (WALL_OFFSET - 0.5)],
-          modules: layout.courtyard.modules.filter((m) => m.side === "north"),
-        },
-        window_frames: STATIC_PRE_FRAMES + 3 * TURN_FRAMES + 2 * OBSERVE_FRAMES + spec.gap_frames,
+        x: this.describeX(layout),
+        window_frames: this.windowSteps(spec),
         fps: 20,
       },
       phase_plan: phasePlan(spec),
       suggested_window: "window_start_frame .. window_end_frame (static_pre .. second_observe); frames before it are the static lead, after it a static tail",
     });
     Object.assign(this._evalMetadata, { first_observer: agents[first], second_observer: agents[second] });
-    return out;
   }
 
   async entryPoint(bot, rcon, sharedBotRng, coordinator, iterationID, episodeNum, args) {
@@ -325,4 +361,8 @@ class CrossRevisitEvalEpisode extends SharedArenaEvalEpisode {
   }
 }
 
-module.exports = { CrossRevisitEvalEpisode, _internals: { crossRevisitSpec, phasePlan, turnedDeg } };
+module.exports = {
+  CrossRevisitEvalEpisode,
+  crossRevisitConstants: { STATIC_PRE_FRAMES, TURN_FRAMES, OBSERVE_FRAMES, GAP_FRAMES, TURN_DEG, DEG_PER_FRAME, PARTNER_OFFSET_DEG },
+  _internals: { crossRevisitSpec, phasePlan, turnedDeg },
+};

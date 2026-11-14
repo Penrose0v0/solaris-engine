@@ -103,6 +103,9 @@ const {
   CrossRevisitEvalEpisode,
 } = require("./episode-handlers/eval/cross-revisit-eval-episode");
 const {
+  SharedPersistEvalEpisode,
+} = require("./episode-handlers/eval/shared-persist-eval-episode");
+const {
   WorldModRevisitEvalEpisode,
 } = require("./episode-handlers/eval/world-mod-revisit-eval-episode");
 const {
@@ -152,6 +155,7 @@ const episodeClassMap = {
   actorMotionEval: ActorMotionEvalEpisode,
   trajRevisitEval: TrajRevisitEvalEpisode,
   crossRevisitEval: CrossRevisitEvalEpisode,
+  sharedPersistEval: SharedPersistEvalEpisode,
   worldModRevisitEval: WorldModRevisitEvalEpisode,
   worldModOffscreenEval: WorldModOffscreenEvalEpisode,
 };
@@ -183,6 +187,7 @@ const evalEpisodeClasses = [
   ActorMotionEvalEpisode,
   TrajRevisitEvalEpisode,
   CrossRevisitEvalEpisode,
+  SharedPersistEvalEpisode,
   WorldModRevisitEvalEpisode,
   WorldModOffscreenEvalEpisode,
 ];
@@ -241,6 +246,7 @@ const defaultEpisodeTypes = [
   "actorMotionEval",
   "trajRevisitEval",
   "crossRevisitEval",
+  "sharedPersistEval",
   "worldModRevisitEval",
   "worldModOffscreenEval",
 ];
